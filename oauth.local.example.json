@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy this file to oauth.local.json (git-ignored) and fill in the values from your Google Cloud and TikTok developer apps. Run the app with: flutter run -d windows --dart-define-from-file=oauth.local.json",
+  "YOUTUBE_CLIENT_ID": "",
+  "YOUTUBE_CLIENT_SECRET": "",
+  "TIKTOK_CLIENT_KEY": "",
+  "TIKTOK_CLIENT_SECRET": ""
+}
