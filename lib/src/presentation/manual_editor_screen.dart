@@ -1003,31 +1003,62 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
       return;
     }
 
-    final audioFilters = <String>[
-      if (clip.reverse) 'areverse',
-      ...FilterSnippets.audioTempo(speed),
-    ];
-
     // ffplay runs on real time, so the cutoff is measured in wall time.
     final cutoffDeadline = DateTime.now().add(
       Duration(microseconds: (remainingWallSeconds * 1000000).round()),
     );
+    final volume = '${(clip.volume.clamp(0.0, 2.0) * 100).round()}';
 
+    // Reversed audio: ffplay's realtime `areverse` is unreliable (it needs to
+    // buffer to EOF and often emits nothing), so pre-render the reversed and
+    // tempo-adjusted segment to a temp file, then play that forward — it
+    // starts at the current source position and runs back to the trim start,
+    // matching the reversed video.
+    String? reversedTempPath;
+    if (clip.reverse) {
+      reversedTempPath = await _renderReversedAudioSegment(
+        clip: clip,
+        readStartSeconds: readStartSeconds,
+        readDurationSeconds: readDurationSeconds,
+        speed: speed,
+      );
+      if (reversedTempPath == null || !_isPreviewPlaying || !mounted) {
+        return;
+      }
+    }
+
+    final tempoFilters = FilterSnippets.audioTempo(speed);
     try {
-      final process = await Process.start(FfmpegExecutables.ffplay, <String>[
-        '-nodisp',
-        '-autoexit',
-        '-loglevel',
-        'quiet',
-        '-ss',
-        _ffmpegNumber(readStartSeconds),
-        '-t',
-        _ffmpegNumber(readDurationSeconds),
-        if (audioFilters.isNotEmpty) ...['-af', audioFilters.join(',')],
-        '-volume',
-        '${(clip.volume.clamp(0.0, 2.0) * 100).round()}',
-        clip.path,
-      ]);
+      final process = await Process.start(
+        FfmpegExecutables.ffplay,
+        reversedTempPath != null
+            ? <String>[
+                '-nodisp',
+                '-autoexit',
+                '-loglevel',
+                'quiet',
+                '-volume',
+                volume,
+                reversedTempPath,
+              ]
+            : <String>[
+                '-nodisp',
+                '-autoexit',
+                '-loglevel',
+                'quiet',
+                '-ss',
+                _ffmpegNumber(readStartSeconds),
+                '-t',
+                _ffmpegNumber(readDurationSeconds),
+                if (tempoFilters.isNotEmpty) ...[
+                  '-af',
+                  tempoFilters.join(','),
+                ],
+                '-volume',
+                volume,
+                clip.path,
+              ],
+      );
       if (!_isPreviewPlaying || !mounted) {
         process.kill();
         return;
@@ -1056,6 +1087,57 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
       );
     } catch (_) {
       return;
+    }
+  }
+
+  /// Renders a reversed (and speed-adjusted) audio segment to a temp WAV and
+  /// returns its path, or null on failure. Playing this forward reproduces the
+  /// reversed clip's audio reliably, which ffplay's live `areverse` does not.
+  Future<String?> _renderReversedAudioSegment({
+    required TimelineClip clip,
+    required double readStartSeconds,
+    required double readDurationSeconds,
+    required double speed,
+  }) async {
+    try {
+      final cacheDir = Directory(
+        p.join(Directory.systemTemp.path, 'content_maker_preview_audio'),
+      );
+      await cacheDir.create(recursive: true);
+      final key =
+          '${clip.id}_${_ffmpegNumber(readStartSeconds)}_'
+          '${_ffmpegNumber(readDurationSeconds)}_${_ffmpegNumber(speed)}';
+      final outputPath = p.join(cacheDir.path, '$key.wav');
+      final outputFile = File(outputPath);
+      final filters = <String>[
+        'areverse',
+        ...FilterSnippets.audioTempo(speed),
+      ];
+      if (!outputFile.existsSync()) {
+        final result = await Process.run(FfmpegExecutables.ffmpeg, <String>[
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-ss',
+          _ffmpegNumber(readStartSeconds),
+          '-t',
+          _ffmpegNumber(readDurationSeconds),
+          '-i',
+          clip.path,
+          '-af',
+          filters.join(','),
+          '-ac',
+          '2',
+          outputPath,
+        ]);
+        if (result.exitCode != 0 || !outputFile.existsSync()) {
+          return null;
+        }
+      }
+      return outputPath;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -2434,8 +2516,7 @@ class _PreviewCanvasPanel extends StatelessWidget {
       child: Center(
         child: AspectRatio(
           aspectRatio: canvasPreset.width / canvasPreset.height,
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(10),
+          child: ClipRect(
             child: DecoratedBox(
               decoration: const BoxDecoration(color: Color(0xFF050505)),
               child: LayoutBuilder(
@@ -2609,7 +2690,6 @@ class _PreviewVideoLayer extends StatelessWidget {
                         : const Color(0x80FFFFFF),
                     width: selected ? 2 : 1,
                   ),
-                  borderRadius: BorderRadius.circular(10),
                   boxShadow: const [
                     BoxShadow(
                       color: Color(0x66000000),
@@ -2618,8 +2698,7 @@ class _PreviewVideoLayer extends StatelessWidget {
                     ),
                   ],
                 ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
+                child: ClipRect(
                   child: Stack(
                     fit: StackFit.expand,
                     children: [

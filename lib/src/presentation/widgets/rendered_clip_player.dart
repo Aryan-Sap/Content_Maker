@@ -304,8 +304,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
             constraints: const BoxConstraints(maxHeight: 480),
             child: AspectRatio(
               aspectRatio: aspectRatio,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(10),
+              child: ClipRect(
                 child: ColoredBox(
                   color: Colors.black,
                   child: currentImage == null
