@@ -1,13 +1,16 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:path/path.dart' as p;
 
 import '../../domain/rendering/media_metadata.dart';
 import '../../infrastructure/ffmpeg/ffmpeg_executables.dart';
 import '../../infrastructure/ffmpeg/ffmpeg_media_probe.dart';
+import 'frame_stream_player.dart';
 
 /// In-app player for a finished render: streams decoded frames from FFmpeg
 /// (MJPEG over a pipe) with synced audio via ffplay, so the exported clip can
@@ -22,17 +25,16 @@ class RenderedClipPlayer extends StatefulWidget {
 }
 
 class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
-  static const _jpegStart = [0xFF, 0xD8];
-  static const _jpegEnd = [0xFF, 0xD9];
-
   final _probe = const FfmpegMediaProbe();
 
   MediaMetadata? _metadata;
-  Uint8List? _frameBytes;
-  Process? _videoProcess;
+  ui.Image? _currentImage;
+  ui.Image? _previousImage;
+  late final FrameStreamPlayer _videoPlayer = FrameStreamPlayer(
+    onFrame: _handleFrame,
+  );
   Process? _audioProcess;
   Timer? _positionTimer;
-  final List<int> _streamBuffer = [];
 
   double _positionSeconds = 0;
   bool _isPlaying = false;
@@ -55,7 +57,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     if (oldWidget.videoPath != widget.videoPath) {
       _stopPlayback();
       _positionSeconds = 0;
-      _frameBytes = null;
+      _clearImages();
       _metadata = null;
       unawaited(_load());
     }
@@ -64,7 +66,48 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
   @override
   void dispose() {
     _stopPlayback(updateState: false);
+    _videoPlayer.dispose();
+    _previousImage?.dispose();
+    _currentImage?.dispose();
     super.dispose();
+  }
+
+  void _handleFrame(ui.Image image) {
+    if (!mounted) {
+      image.dispose();
+      return;
+    }
+    setState(() {
+      _previousImage?.dispose();
+      _previousImage = _currentImage;
+      _currentImage = image;
+    });
+  }
+
+  void _setStillImage(ui.Image image) {
+    if (!mounted) {
+      image.dispose();
+      return;
+    }
+    setState(() {
+      _previousImage?.dispose();
+      _previousImage = null;
+      final old = _currentImage;
+      _currentImage = image;
+      if (old != null) {
+        SchedulerBinding.instance.addPostFrameCallback((_) => old.dispose());
+      }
+    });
+  }
+
+  void _clearImages() {
+    _previousImage?.dispose();
+    _previousImage = null;
+    final image = _currentImage;
+    _currentImage = null;
+    if (image != null) {
+      SchedulerBinding.instance.addPostFrameCallback((_) => image.dispose());
+    }
   }
 
   Future<void> _load() async {
@@ -111,7 +154,16 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
           bytes.isEmpty) {
         return;
       }
-      setState(() => _frameBytes = Uint8List.fromList(bytes));
+      final codec = await ui.instantiateImageCodec(
+        Uint8List.fromList(bytes),
+      );
+      final frame = await codec.getNextFrame();
+      codec.dispose();
+      if (!mounted || request != _stillFrameRequest || _isPlaying) {
+        frame.image.dispose();
+        return;
+      }
+      _setStillImage(frame.image);
     } catch (_) {
       return;
     }
@@ -127,7 +179,12 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     setState(() => _isPlaying = true);
     _playStartedAt = DateTime.now();
     _playStartPosition = _positionSeconds;
-    await _startVideoStream(_positionSeconds);
+    await _videoPlayer.playForward(
+      inputPath: widget.videoPath,
+      startSeconds: _positionSeconds,
+      displayFps: 30,
+      maxDimension: 1280,
+    );
     _startAudio(_positionSeconds);
     _positionTimer?.cancel();
     _positionTimer = Timer.periodic(const Duration(milliseconds: 100), (_) {
@@ -146,43 +203,6 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
         setState(() => _positionSeconds = next);
       }
     });
-  }
-
-  Future<void> _startVideoStream(double fromSeconds) async {
-    _stopVideoStream();
-    try {
-      final process = await Process.start(FfmpegExecutables.ffmpeg, <String>[
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-readrate',
-        '1',
-        '-ss',
-        _number(fromSeconds),
-        '-i',
-        widget.videoPath,
-        '-vf',
-        'fps=30,scale=w=min(iw\\,1280):h=-2:flags=lanczos',
-        '-an',
-        '-f',
-        'image2pipe',
-        '-vcodec',
-        'mjpeg',
-        '-q:v',
-        '3',
-        'pipe:1',
-      ]);
-      if (!mounted || !_isPlaying) {
-        process.kill();
-        return;
-      }
-      _videoProcess = process;
-      _streamBuffer.clear();
-      process.stdout.listen(_handleStreamChunk, onError: (_) {});
-      unawaited(process.stderr.drain<void>());
-    } catch (_) {
-      return;
-    }
   }
 
   void _startAudio(double fromSeconds) {
@@ -211,44 +231,11 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     }());
   }
 
-  void _handleStreamChunk(List<int> chunk) {
-    if (!mounted || !_isPlaying) {
-      return;
-    }
-    _streamBuffer.addAll(chunk);
-    while (true) {
-      final start = _findMarker(_streamBuffer, _jpegStart, 0);
-      if (start == -1) {
-        if (_streamBuffer.length > 4096) {
-          _streamBuffer.removeRange(0, _streamBuffer.length - 2);
-        }
-        return;
-      }
-      final end = _findMarker(_streamBuffer, _jpegEnd, start + 2);
-      if (end == -1) {
-        if (start > 0) {
-          _streamBuffer.removeRange(0, start);
-        }
-        return;
-      }
-      final frame = Uint8List.fromList(_streamBuffer.sublist(start, end + 2));
-      _streamBuffer.removeRange(0, end + 2);
-      setState(() => _frameBytes = frame);
-    }
-  }
-
-  void _stopVideoStream() {
-    final process = _videoProcess;
-    _videoProcess = null;
-    _streamBuffer.clear();
-    process?.kill();
-  }
-
   void _stopPlayback({bool updateState = true, bool resetToEnd = false}) {
     _positionTimer?.cancel();
     _positionTimer = null;
     _playStartedAt = null;
-    _stopVideoStream();
+    _videoPlayer.stop();
     _audioProcess?.kill();
     _audioProcess = null;
     if (!updateState || !mounted) {
@@ -293,7 +280,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
         (metadata?.width ?? 0) > 0 && (metadata?.height ?? 0) > 0
         ? metadata!.width! / metadata.height!
         : 9 / 16;
-    final frameBytes = _frameBytes;
+    final currentImage = _currentImage;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -321,7 +308,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
                 borderRadius: BorderRadius.circular(10),
                 child: ColoredBox(
                   color: Colors.black,
-                  child: frameBytes == null
+                  child: currentImage == null
                       ? const Center(
                           child: Icon(
                             Icons.movie_outlined,
@@ -329,10 +316,9 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
                             color: Color(0x66FFFFFF),
                           ),
                         )
-                      : Image.memory(
-                          frameBytes,
+                      : RawImage(
+                          image: currentImage,
                           fit: BoxFit.contain,
-                          gaplessPlayback: true,
                           filterQuality: FilterQuality.medium,
                           isAntiAlias: true,
                         ),
@@ -395,20 +381,4 @@ String _formatTime(double seconds) {
 String _number(num value) {
   final text = value.toStringAsFixed(3);
   return text.replaceFirst(RegExp(r'\.?0+$'), '');
-}
-
-int _findMarker(List<int> bytes, List<int> marker, int start) {
-  for (var i = start; i <= bytes.length - marker.length; i++) {
-    var matches = true;
-    for (var j = 0; j < marker.length; j++) {
-      if (bytes[i + j] != marker[j]) {
-        matches = false;
-        break;
-      }
-    }
-    if (matches) {
-      return i;
-    }
-  }
-  return -1;
 }

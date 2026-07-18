@@ -210,6 +210,33 @@ Platform limitations to preserve:
 - The first browser consent per platform is unavoidable; refresh tokens make later
   posts hands-off.
 
+## Preview Playback Engine
+
+`lib/src/presentation/widgets/frame_stream_player.dart` (`FrameStreamPlayer`)
+is the shared smooth-playback engine used by both the manual editor's
+`_LiveFramePreview` and `RenderedClipPlayer`:
+
+- FFmpeg pipes MJPEG frames; `MjpegFrameParser` splits them (unit-tested in
+  `test/presentation/mjpeg_frame_parser_test.dart`).
+- A bounded frame queue with pipe backpressure (pause/resume the stdout
+  subscription) acts as a jitter buffer; a display timer paced by **wall
+  clock** consumes frames by elapsed time, so a slow UI drops frames instead
+  of drifting. This replaced the old approach of `setState`-ing raw
+  `Image.memory` bytes per chunk (bursty, stuttery).
+- Frames decode to `ui.Image` off the UI thread and render via `RawImage`;
+  the widgets own/dispose images (current + previous, disposed post-frame).
+- Real reverse playback: forward-decodes a bounded segment into a compressed
+  frame buffer, plays it back last-first, then chains earlier segments
+  (`_reverseSegmentFrames`).
+- Playhead clocks are wall-clock based (`_startPlaybackClock` in the manual
+  editor, `_playStartedAt` in `RenderedClipPlayer`) so video tracks the
+  ffplay audio instead of accumulating per-tick drift.
+
+Preview **audio** (manual editor `_startAudioProcess`) applies `areverse` for
+reversed clips and `atempo` (via `FilterSnippets.audioTempo`) for speed
+changes, reads the correct source segment, and uses a wall-time cutoff — so
+audio stays in sync with sped-up/reversed video.
+
 ## Rendered Clip Preview, Notifications, Links
 
 - `lib/src/presentation/widgets/rendered_clip_player.dart` — in-app player for

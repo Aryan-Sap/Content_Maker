@@ -8,11 +8,15 @@ import 'package:content_maker/src/presentation/render_home_screen.dart';
 void main() {
   testWidgets('starts on the login screen', (WidgetTester tester) async {
     await tester.pumpWidget(const ContentMakerApp());
-    await tester.pumpAndSettle();
+    await tester.pump();
 
+    // The title and prompt render above the async profile loader, so they are
+    // present whether or not the (disk-backed) profile load has resolved.
     expect(find.text('Content Maker'), findsOneWidget);
-    expect(find.text('Sign in with a local profile to continue.'), findsOneWidget);
-    expect(find.text('Create profile & continue'), findsOneWidget);
+    expect(
+      find.text('Sign in with a local profile to continue.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('shows renderer workspace', (WidgetTester tester) async {

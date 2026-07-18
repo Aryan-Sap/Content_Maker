@@ -17,8 +17,10 @@ import '../domain/rendering/render_job.dart';
 import '../infrastructure/ffmpeg/ffmpeg_executables.dart';
 import '../infrastructure/ffmpeg/ffmpeg_media_probe.dart';
 import '../infrastructure/ffmpeg/ffmpeg_manual_timeline_processor.dart';
+import '../infrastructure/ffmpeg/filter_snippets.dart';
 import '../infrastructure/notifications/desktop_notifier.dart';
 import 'publishing/publish_panel.dart';
+import 'widgets/frame_stream_player.dart';
 import 'widgets/rendered_clip_player.dart';
 
 enum _ManualCanvasPreset { vertical, square, landscape }
@@ -842,6 +844,8 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
   void _schedulePreviewSeekRestart() {
     _previewSeekRestartTimer?.cancel();
     _stopPreviewAudio();
+    // Rebase the wall-clock playhead on the new position immediately.
+    _startPlaybackClock();
     _previewSeekRestartTimer = Timer(const Duration(milliseconds: 90), () {
       if (!mounted || !_isPreviewPlaying) {
         return;
@@ -862,14 +866,28 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
       }
       _isPreviewPlaying = true;
     });
+    _startPlaybackClock();
+    _startPreviewAudio();
+  }
+
+  /// (Re)starts the playhead clock from the current playhead position.
+  ///
+  /// The playhead is derived from wall time, not accumulated per tick: timer
+  /// ticks can be delayed under load, and audio (ffplay) runs on real time,
+  /// so accumulating 1/fps per tick makes video drift behind audio.
+  void _startPlaybackClock() {
     _previewPlaybackTimer?.cancel();
+    final startedAt = DateTime.now();
+    final startPlayhead = _playheadSeconds;
     final frameRate = _activePlaybackFrameRate();
     final frameDuration = Duration(microseconds: (1000000 / frameRate).round());
     _previewPlaybackTimer = Timer.periodic(frameDuration, (_) {
       if (!mounted) {
         return;
       }
-      final next = _playheadSeconds + (1 / _activePlaybackFrameRate());
+      final elapsed =
+          DateTime.now().difference(startedAt).inMicroseconds / 1000000;
+      final next = startPlayhead + elapsed;
       if (next >= _timelineDuration) {
         _stopPreviewPlayback(resetToStart: true);
         return;
@@ -878,7 +896,6 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
         _playheadSeconds = next;
       });
     });
-    _startPreviewAudio();
   }
 
   double _activePlaybackFrameRate() {
@@ -952,25 +969,48 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
   }
 
   Future<void> _startAudioProcess(TimelineClip clip) async {
+    final speed = clip.speed.clamp(0.1, 100.0).toDouble();
+    // Timeline (wall) offset into the clip and the wall time still to play.
     final clipOffset = (_playheadSeconds - clip.timelineStartSeconds)
         .clamp(0.0, clip.durationSeconds)
         .toDouble();
-    final sourceOffset = clipOffset * clip.speed.clamp(0.1, 100.0);
-    final sourceSeconds = clip.reverse
-        ? (clip.trimEndSeconds - sourceOffset)
-              .clamp(clip.trimStartSeconds, clip.trimEndSeconds)
-              .toDouble()
-        : (clip.trimStartSeconds + sourceOffset)
-              .clamp(clip.trimStartSeconds, clip.trimEndSeconds)
-              .toDouble();
-    final durationSeconds = clip.reverse
-        ? sourceSeconds - clip.trimStartSeconds
-        : clip.trimEndSeconds - sourceSeconds;
-    if (durationSeconds <= 0) {
+    final remainingWallSeconds = clip.durationSeconds - clipOffset;
+    if (remainingWallSeconds <= 0) {
       return;
     }
+    final sourceOffset = clipOffset * speed;
+
+    // The source segment ffplay reads, and the audio filters that make it
+    // match the video: areverse for reverse clips, atempo for speed changes.
+    // Without these the audio played forward at 1x while the video was
+    // reversed/sped up — the sync bug being fixed here.
+    final double readStartSeconds;
+    final double readDurationSeconds;
+    if (clip.reverse) {
+      // Play [trimStart .. currentSourcePos] reversed, ending at trimStart.
+      final currentSourcePos = (clip.trimEndSeconds - sourceOffset)
+          .clamp(clip.trimStartSeconds, clip.trimEndSeconds)
+          .toDouble();
+      readStartSeconds = clip.trimStartSeconds;
+      readDurationSeconds = currentSourcePos - clip.trimStartSeconds;
+    } else {
+      readStartSeconds = (clip.trimStartSeconds + sourceOffset)
+          .clamp(clip.trimStartSeconds, clip.trimEndSeconds)
+          .toDouble();
+      readDurationSeconds = clip.trimEndSeconds - readStartSeconds;
+    }
+    if (readDurationSeconds <= 0) {
+      return;
+    }
+
+    final audioFilters = <String>[
+      if (clip.reverse) 'areverse',
+      ...FilterSnippets.audioTempo(speed),
+    ];
+
+    // ffplay runs on real time, so the cutoff is measured in wall time.
     final cutoffDeadline = DateTime.now().add(
-      Duration(microseconds: (durationSeconds * 1000000).round()),
+      Duration(microseconds: (remainingWallSeconds * 1000000).round()),
     );
 
     try {
@@ -980,9 +1020,10 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
         '-loglevel',
         'quiet',
         '-ss',
-        _ffmpegNumber(sourceSeconds),
+        _ffmpegNumber(readStartSeconds),
         '-t',
-        _ffmpegNumber(durationSeconds),
+        _ffmpegNumber(readDurationSeconds),
+        if (audioFilters.isNotEmpty) ...['-af', audioFilters.join(',')],
         '-volume',
         '${(clip.volume.clamp(0.0, 2.0) * 100).round()}',
         clip.path,
@@ -2704,15 +2745,14 @@ class _LiveFramePreview extends StatefulWidget {
 }
 
 class _LiveFramePreviewState extends State<_LiveFramePreview> {
-  static const _jpegStart = [0xFF, 0xD8];
-  static const _jpegEnd = [0xFF, 0xD9];
-
   String? _framePath;
-  Uint8List? _streamFrameBytes;
   String? _requestedFrameKey;
-  Process? _streamProcess;
   Timer? _sourceSyncTimer;
-  final List<int> _streamBuffer = [];
+  late final FrameStreamPlayer _streamPlayer = FrameStreamPlayer(
+    onFrame: _handleStreamFrame,
+  );
+  ui.Image? _streamImage;
+  ui.Image? _previousStreamImage;
 
   @override
   void initState() {
@@ -2740,24 +2780,15 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
     final jumpedWhilePlaying =
         widget.isPlaying &&
         (oldWidget.playheadSeconds - widget.playheadSeconds).abs() > 0.5;
-    final reverseFrameAdvance =
-        widget.isPlaying &&
-        widget.clip.reverse &&
-        oldWidget.playheadSeconds != widget.playheadSeconds;
     if (clipChanged ||
         enabledChanged ||
         playbackChanged ||
         playbackPipelineChanged ||
         explicitlySeeked ||
         seekedWhilePaused ||
-        jumpedWhilePlaying ||
-        reverseFrameAdvance) {
+        jumpedWhilePlaying) {
       _schedulePreviewSourceSync(
-        debounce:
-            explicitlySeeked ||
-            seekedWhilePaused ||
-            jumpedWhilePlaying ||
-            reverseFrameAdvance,
+        debounce: explicitlySeeked || seekedWhilePaused || jumpedWhilePlaying,
       );
     }
   }
@@ -2765,8 +2796,34 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
   @override
   void dispose() {
     _sourceSyncTimer?.cancel();
-    _stopStream();
+    _streamPlayer.dispose();
+    _previousStreamImage?.dispose();
+    _streamImage?.dispose();
     super.dispose();
+  }
+
+  void _handleStreamFrame(ui.Image image) {
+    if (!mounted || !widget.isPlaying || !widget.enabled) {
+      image.dispose();
+      return;
+    }
+    setState(() {
+      // Dispose the grandparent frame: the parent may still be painting.
+      _previousStreamImage?.dispose();
+      _previousStreamImage = _streamImage;
+      _streamImage = image;
+    });
+  }
+
+  void _clearStreamImage() {
+    _previousStreamImage?.dispose();
+    _previousStreamImage = null;
+    final image = _streamImage;
+    _streamImage = null;
+    if (image != null) {
+      // The current frame may still be referenced by the last paint.
+      WidgetsBinding.instance.addPostFrameCallback((_) => image.dispose());
+    }
   }
 
   void _schedulePreviewSourceSync({bool debounce = false}) {
@@ -2776,7 +2833,7 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
       return;
     }
     if (widget.isPlaying) {
-      _stopStream();
+      _streamPlayer.stop();
     }
     _sourceSyncTimer = Timer(const Duration(milliseconds: 60), () {
       if (mounted) {
@@ -2788,130 +2845,51 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
   void _syncPreviewSource() {
     _sourceSyncTimer?.cancel();
     if (!widget.enabled) {
-      _stopStream();
+      _streamPlayer.stop();
       return;
     }
 
-    if (widget.isPlaying && !widget.clip.reverse) {
-      _startStream();
+    if (widget.isPlaying) {
+      unawaited(_startStream());
     } else {
-      _stopStream();
+      _streamPlayer.stop();
       unawaited(_loadFrame());
     }
   }
 
   Future<void> _startStream() async {
-    _stopStream();
-
     final sourceSeconds = _sourceSeconds();
     final speed = widget.clip.speed.clamp(0.1, 100.0).toDouble();
-    final remainingSourceDuration = widget.clip.reverse
-        ? sourceSeconds - widget.clip.trimStartSeconds
-        : widget.clip.trimEndSeconds - sourceSeconds;
-    if (remainingSourceDuration <= 0) {
-      return;
-    }
-
     final previewFrameRate = widget.clip.sourceFrameRate
         .clamp(12.0, 30.0)
         .toDouble();
-    // Cap the preview at 1600px wide without upscaling smaller sources.
-    const previewScale = 'scale=w=min(iw\\,1600):h=-2:flags=lanczos';
-    final filter = widget.clip.reverse
-        ? 'reverse,setpts=PTS-STARTPTS,'
-              'fps=${_ffmpegNumber(previewFrameRate)},'
-              '$previewScale'
-        : 'fps=${_ffmpegNumber(previewFrameRate)},'
-              '$previewScale';
-    final seekSeconds = widget.clip.reverse
-        ? widget.clip.trimStartSeconds
-        : sourceSeconds;
-    try {
-      final process = await Process.start(FfmpegExecutables.ffmpeg, <String>[
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-readrate',
-        _ffmpegNumber(speed),
-        '-ss',
-        _ffmpegNumber(seekSeconds),
-        '-i',
-        widget.clip.path,
-        '-t',
-        _ffmpegNumber(remainingSourceDuration),
-        '-vf',
-        filter,
-        '-an',
-        '-f',
-        'image2pipe',
-        '-vcodec',
-        'mjpeg',
-        '-q:v',
-        '2',
-        'pipe:1',
-      ]);
-      if (!mounted || !widget.isPlaying || !widget.enabled) {
-        process.kill();
+
+    if (widget.clip.reverse) {
+      final remaining = sourceSeconds - widget.clip.trimStartSeconds;
+      if (remaining <= 0) {
+        _streamPlayer.stop();
         return;
       }
-
-      _streamProcess = process;
-      _streamBuffer.clear();
-      process.stdout.listen(
-        _handleStreamChunk,
-        onDone: _stopStream,
-        onError: (_) => _stopStream(),
+      await _streamPlayer.playReverse(
+        inputPath: widget.clip.path,
+        endSeconds: sourceSeconds,
+        floorSeconds: widget.clip.trimStartSeconds,
+        displayFps: previewFrameRate,
+        speed: speed,
       );
-      process.stderr.drain<void>();
-      unawaited(
-        process.exitCode.then((_) {
-          if (mounted && identical(_streamProcess, process)) {
-            _stopStream();
-          }
-        }),
-      );
-    } catch (_) {
-      return;
-    }
-  }
-
-  void _stopStream() {
-    final process = _streamProcess;
-    _streamProcess = null;
-    _streamBuffer.clear();
-    process?.kill();
-  }
-
-  void _handleStreamChunk(List<int> chunk) {
-    if (!mounted || !widget.isPlaying || !widget.enabled) {
-      return;
-    }
-
-    _streamBuffer.addAll(chunk);
-    while (true) {
-      final start = _findMarker(_streamBuffer, _jpegStart, 0);
-      if (start == -1) {
-        if (_streamBuffer.length > 4096) {
-          _streamBuffer.removeRange(0, _streamBuffer.length - 2);
-        }
+    } else {
+      final remaining = widget.clip.trimEndSeconds - sourceSeconds;
+      if (remaining <= 0) {
+        _streamPlayer.stop();
         return;
       }
-
-      final end = _findMarker(_streamBuffer, _jpegEnd, start + 2);
-      if (end == -1) {
-        if (start > 0) {
-          _streamBuffer.removeRange(0, start);
-        }
-        return;
-      }
-
-      final frameBytes = Uint8List.fromList(
-        _streamBuffer.sublist(start, end + 2),
+      await _streamPlayer.playForward(
+        inputPath: widget.clip.path,
+        startSeconds: sourceSeconds,
+        sourceDurationSeconds: remaining,
+        displayFps: previewFrameRate,
+        speed: speed,
       );
-      _streamBuffer.removeRange(0, end + 2);
-      setState(() {
-        _streamFrameBytes = frameBytes;
-      });
     }
   }
 
@@ -2970,6 +2948,8 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
 
       setState(() {
         _framePath = outputPath;
+        // A fresh still supersedes whatever streaming frame was left behind.
+        _clearStreamImage();
       });
     } catch (_) {
       return;
@@ -2999,12 +2979,11 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
 
   @override
   Widget build(BuildContext context) {
-    final streamFrameBytes = _streamFrameBytes;
-    if (widget.enabled && streamFrameBytes != null) {
-      return Image.memory(
-        streamFrameBytes,
+    final streamImage = _streamImage;
+    if (widget.enabled && streamImage != null) {
+      return RawImage(
+        image: streamImage,
         fit: BoxFit.cover,
-        gaplessPlayback: true,
         filterQuality: FilterQuality.medium,
         isAntiAlias: true,
       );
@@ -3024,22 +3003,6 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
       isAntiAlias: true,
     );
   }
-}
-
-int _findMarker(List<int> bytes, List<int> marker, int start) {
-  for (var i = start; i <= bytes.length - marker.length; i++) {
-    var matches = true;
-    for (var j = 0; j < marker.length; j++) {
-      if (bytes[i + j] != marker[j]) {
-        matches = false;
-        break;
-      }
-    }
-    if (matches) {
-      return i;
-    }
-  }
-  return -1;
 }
 
 class _TimelinePanel extends StatefulWidget {
