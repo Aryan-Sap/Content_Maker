@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
+import '../app/brand.dart';
 import '../application/app_session_store.dart';
 import '../application/auto_edit_preset_store.dart';
 import '../application/create_shorts_export.dart';
@@ -172,10 +173,12 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   final _audioController = TextEditingController();
   final _trimStartController = TextEditingController(text: '0');
   final _trimEndController = TextEditingController();
+  final _workspaceScrollController = ScrollController();
   final _exportUseCase = const CreateShortsExport(FfmpegVideoProcessor());
   final _presetStore = const AutoEditPresetStore();
 
   StreamSubscription<RenderProgress>? _renderSubscription;
+  Completer<RenderProgress>? _activeRenderCompleter;
   _WorkspaceMode _workspaceMode = _WorkspaceMode.automatic;
   RenderPreset _preset = RenderPreset.gameplayShort;
   _OutputResolution _resolution = _OutputResolution.vertical;
@@ -188,6 +191,8 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   double? _progress;
   String _status = 'Ready';
   bool _isRendering = false;
+  bool _renderCancelRequested = false;
+  int _renderGeneration = 0;
   double _sourceAudioVolume = 1;
   double _overlayAudioVolume = 0.75;
 
@@ -223,7 +228,23 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
     _audioController.dispose();
     _trimStartController.dispose();
     _trimEndController.dispose();
+    _workspaceScrollController.dispose();
     super.dispose();
+  }
+
+  /// Glides the workspace down to the freshly revealed preview + publish
+  /// section after a successful render.
+  void _scrollToRenderResult() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_workspaceScrollController.hasClients) {
+        return;
+      }
+      _workspaceScrollController.animateTo(
+        _workspaceScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 650),
+        curve: Curves.easeInOutCubic,
+      );
+    });
   }
 
   Future<void> _loadEditPresets() async {
@@ -803,9 +824,11 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         ),
     ];
 
+    final renderGeneration = ++_renderGeneration;
     await _renderSubscription?.cancel();
     setState(() {
       _isRendering = true;
+      _renderCancelRequested = false;
       _progress = 0;
       _lastRenderedOutput = null;
       _status = isBatch ? 'Queued ${jobs.length} videos.' : 'Queued';
@@ -814,7 +837,9 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
     var completed = 0;
     RenderProgress? terminalProgress;
     for (var i = 0; i < jobs.length; i++) {
-      if (!mounted) {
+      if (!mounted ||
+          _renderCancelRequested ||
+          renderGeneration != _renderGeneration) {
         return;
       }
       terminalProgress = await _renderJob(jobs[i], i, jobs.length);
@@ -824,13 +849,19 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
       completed++;
     }
 
-    if (!mounted) {
+    if (!mounted || renderGeneration != _renderGeneration) {
       return;
     }
-    final succeeded = completed == jobs.length;
+    final canceled =
+        _renderCancelRequested ||
+        terminalProgress?.status == RenderJobStatus.canceled;
+    final succeeded = !canceled && completed == jobs.length;
     setState(() {
       _isRendering = false;
-      if (succeeded) {
+      if (canceled) {
+        _progress = null;
+        _status = 'Render canceled.';
+      } else if (succeeded) {
         _progress = 1;
         _status = isBatch
             ? 'Rendered $completed videos.'
@@ -840,27 +871,34 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         _status = terminalProgress?.message ?? 'Render stopped.';
       }
     });
-    unawaited(
-      DesktopNotifier.show(
-        title: succeeded ? 'Render complete' : 'Render failed',
-        body: succeeded
-            ? (isBatch
-                  ? '$completed videos are ready to preview and publish.'
-                  : '${p.basename(jobs.first.outputPath)} is ready to '
-                        'preview and publish.')
-            : (terminalProgress?.message ?? 'The render stopped early.'),
-      ),
-    );
+    if (!canceled) {
+      unawaited(
+        DesktopNotifier.show(
+          title: succeeded ? 'Render complete' : 'Render failed',
+          body: succeeded
+              ? (isBatch
+                    ? '$completed videos are ready to preview and publish.'
+                    : '${p.basename(jobs.first.outputPath)} is ready to '
+                          'preview and publish.')
+              : (terminalProgress?.message ?? 'The render stopped early.'),
+        ),
+      );
+    }
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          succeeded
-              ? 'Render complete — preview it below before publishing.'
-              : 'Render failed: ${terminalProgress?.message ?? 'unknown error'}',
+        SnackBar(
+          content: Text(
+            canceled
+                ? 'Render canceled.'
+                : succeeded
+                ? 'Render complete — preview it below before publishing.'
+                : 'Render failed: ${terminalProgress?.message ?? 'unknown error'}',
+          ),
         ),
-      ),
-    );
+      );
+      if (succeeded) {
+        _scrollToRenderResult();
+      }
     }
   }
 
@@ -896,6 +934,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
     int total,
   ) async {
     final completer = Completer<RenderProgress>();
+    _activeRenderCompleter = completer;
     await _renderSubscription?.cancel();
     _renderSubscription = _exportUseCase(job).listen(
       (progress) {
@@ -943,7 +982,38 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         }
       },
     );
-    return completer.future;
+    final result = await completer.future;
+    if (identical(_activeRenderCompleter, completer)) {
+      _activeRenderCompleter = null;
+    }
+    return result;
+  }
+
+  Future<void> _cancelRender() async {
+    if (!_isRendering) {
+      return;
+    }
+    _renderGeneration++;
+    _renderCancelRequested = true;
+    final subscription = _renderSubscription;
+    _renderSubscription = null;
+    await subscription?.cancel();
+    final completer = _activeRenderCompleter;
+    if (completer != null && !completer.isCompleted) {
+      completer.complete(
+        const RenderProgress(
+          status: RenderJobStatus.canceled,
+          message: 'Render canceled.',
+        ),
+      );
+    }
+    if (mounted) {
+      setState(() {
+        _isRendering = false;
+        _progress = null;
+        _status = 'Render canceled.';
+      });
+    }
   }
 
   @override
@@ -955,7 +1025,37 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(projectName ?? 'Content Maker'),
+        title: Row(
+          children: [
+            const BrandWordmark(size: 15),
+            if (projectName != null) ...[
+              const SizedBox(width: 14),
+              Flexible(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Brand.surfaceRaised,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: Brand.line),
+                  ),
+                  child: Text(
+                    projectName,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontFamily: Brand.bodyFont,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: Brand.muted,
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
         actions: [
           if (_workspaceMode == _WorkspaceMode.automatic)
             Padding(
@@ -990,7 +1090,21 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
             ),
             Expanded(
               child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 180),
+                duration: const Duration(milliseconds: 280),
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeIn,
+                transitionBuilder: (child, animation) {
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0, 0.015),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: child,
+                    ),
+                  );
+                },
                 child: _workspaceMode == _WorkspaceMode.automatic
                     ? _buildAutomaticWorkspace(desktopRendererAvailable)
                     : ManualEditorScreen(
@@ -1054,6 +1168,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
           onCopyEdits: _copyCurrentEdits,
           onPasteEdits: _pasteCopiedEdits,
           onRender: _render,
+          onCancelRender: _cancelRender,
           status: _status,
           progress: _progress,
           desktopRendererAvailable: desktopRendererAvailable,
@@ -1077,6 +1192,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         final renderedOutput = _lastRenderedOutput;
 
         return SingleChildScrollView(
+          controller: _workspaceScrollController,
           padding: const EdgeInsets.all(20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1084,17 +1200,29 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
               workspace,
               if (renderedOutput != null) ...[
                 const SizedBox(height: 20),
-                _PanelCard(
-                  child: RenderedClipPlayer(
-                    key: ValueKey('player-$renderedOutput'),
-                    videoPath: renderedOutput,
+                // Keyed by output path so every fresh render re-runs the
+                // entrance animation and draws the eye to the result.
+                BrandEntrance(
+                  key: ValueKey('reveal-$renderedOutput'),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _PanelCard(
+                        child: RenderedClipPlayer(
+                          key: ValueKey('player-$renderedOutput'),
+                          videoPath: renderedOutput,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      PublishPanel(
+                        key: ValueKey(renderedOutput),
+                        videoPath: renderedOutput,
+                        defaultTitle: p.basenameWithoutExtension(
+                          renderedOutput,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-                const SizedBox(height: 20),
-                PublishPanel(
-                  key: ValueKey(renderedOutput),
-                  videoPath: renderedOutput,
-                  defaultTitle: p.basenameWithoutExtension(renderedOutput),
                 ),
               ],
             ],
@@ -1114,9 +1242,9 @@ class _PanelCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF111111),
+        color: const Color(0xFF1C1812),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF303030)),
+        border: Border.all(color: const Color(0xFF39352B)),
       ),
       child: Padding(padding: const EdgeInsets.all(20), child: child),
     );
@@ -1133,9 +1261,9 @@ class _ModeSwitcher extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF111111),
+        color: const Color(0xFF1C1812),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF303030)),
+        border: Border.all(color: const Color(0xFF39352B)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(8),
@@ -1200,6 +1328,7 @@ class _ControlsPanel extends StatelessWidget {
     required this.onCopyEdits,
     required this.onPasteEdits,
     required this.onRender,
+    required this.onCancelRender,
     required this.status,
     required this.progress,
     required this.desktopRendererAvailable,
@@ -1246,6 +1375,7 @@ class _ControlsPanel extends StatelessWidget {
   final VoidCallback onCopyEdits;
   final VoidCallback onPasteEdits;
   final VoidCallback onRender;
+  final VoidCallback onCancelRender;
   final String status;
   final double? progress;
   final bool desktopRendererAvailable;
@@ -1256,9 +1386,9 @@ class _ControlsPanel extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF111111),
+        color: const Color(0xFF1C1812),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF303030)),
+        border: Border.all(color: const Color(0xFF39352B)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -1571,14 +1701,13 @@ class _ControlsPanel extends StatelessWidget {
                 text: 'Desktop FFmpeg rendering is wired first.',
               ),
             FilledButton.icon(
-              onPressed: canRender ? onRender : null,
+              onPressed: isRendering
+                  ? onCancelRender
+                  : (canRender ? onRender : null),
               icon: isRendering
-                  ? const SizedBox.square(
-                      dimension: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
+                  ? const Icon(Icons.cancel_outlined)
                   : const Icon(Icons.movie_creation_outlined),
-              label: Text(isRendering ? 'Rendering' : 'Render Short'),
+              label: Text(isRendering ? 'Cancel Render' : 'Render Short'),
             ),
             const SizedBox(height: 16),
             if (isRendering || progress != null) ...[
@@ -1588,7 +1717,7 @@ class _ControlsPanel extends StatelessWidget {
             Text(
               status,
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFFD0D0D0),
+                color: const Color(0xFFCEC9BD),
               ),
             ),
           ],
@@ -1609,7 +1738,7 @@ class _QueueSourceTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Material(
-        color: const Color(0xFF181818),
+        color: const Color(0xFF221D15),
         borderRadius: BorderRadius.circular(10),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1617,7 +1746,7 @@ class _QueueSourceTile extends StatelessWidget {
             children: [
               const Icon(
                 Icons.movie_creation_outlined,
-                color: Color(0xFF9CC4CE),
+                color: Color(0xFFC9F63C),
                 size: 18,
               ),
               const SizedBox(width: 8),
@@ -1675,13 +1804,13 @@ class _ControlSlider extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 20, color: const Color(0xFFD0D0D0)),
+              Icon(icon, size: 20, color: const Color(0xFFCEC9BD)),
               const SizedBox(width: 10),
               Expanded(child: Text(label)),
               Text(
                 displayValue,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFFD0D0D0),
+                  color: const Color(0xFFCEC9BD),
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -1715,9 +1844,9 @@ class _PreviewPanel extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF111111),
+        color: const Color(0xFF1C1812),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF303030)),
+        border: Border.all(color: const Color(0xFF39352B)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -1804,10 +1933,10 @@ class _BlurPreviewBackground extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            Color(0xFF262626),
-            Color(0xFF191919),
-            Color(0xFF303030),
-            Color(0xFF111111),
+            Color(0xFF2C2719),
+            Color(0xFF241F16),
+            Color(0xFF39352B),
+            Color(0xFF1C1812),
           ],
         ),
       ),
@@ -1886,10 +2015,10 @@ class _ForegroundPreview extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            Color(0xFF3A3A3A),
-            Color(0xFF202020),
-            Color(0xFF323232),
-            Color(0xFF171717),
+            Color(0xFF443F33),
+            Color(0xFF282318),
+            Color(0xFF37321F),
+            Color(0xFF1F1B13),
           ],
         ),
       ),
@@ -1937,9 +2066,9 @@ class _StatusBanner extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 16),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF1A1A1A),
+          color: const Color(0xFF241F16),
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFF3A3A3A)),
+          border: Border.all(color: const Color(0xFF443F33)),
         ),
         child: Padding(
           padding: const EdgeInsets.all(12),

@@ -10,9 +10,9 @@ void main() {
     await tester.pumpWidget(const ContentMakerApp());
     await tester.pump();
 
-    // The title and prompt render above the async profile loader, so they are
-    // present whether or not the (disk-backed) profile load has resolved.
-    expect(find.text('Content Maker'), findsOneWidget);
+    // The wordmark and prompt render above the async profile loader, so they
+    // are present whether or not the (disk-backed) profile load has resolved.
+    expect(find.text('CONTENT MAKER'), findsOneWidget);
     expect(
       find.text('Sign in with a local profile to continue.'),
       findsOneWidget,

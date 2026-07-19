@@ -21,14 +21,18 @@ class FfmpegManualTimelineProcessor implements ManualTimelineProcessor {
 
   @override
   Stream<RenderProgress> render(ManualRenderJob job) {
-    final controller = StreamController<RenderProgress>();
-    _run(job, controller);
+    final cancellation = _FfmpegRenderCancellation();
+    final controller = StreamController<RenderProgress>(
+      onCancel: cancellation.cancel,
+    );
+    _run(job, controller, cancellation);
     return controller.stream;
   }
 
   Future<void> _run(
     ManualRenderJob job,
     StreamController<RenderProgress> controller,
+    _FfmpegRenderCancellation cancellation,
   ) async {
     try {
       if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
@@ -42,6 +46,9 @@ class FfmpegManualTimelineProcessor implements ManualTimelineProcessor {
       }
 
       final toolError = await toolValidator.validate();
+      if (cancellation.isCanceled) {
+        return;
+      }
       if (toolError != null) {
         controller.add(
           RenderProgress(status: RenderJobStatus.failed, message: toolError),
@@ -76,6 +83,13 @@ class FfmpegManualTimelineProcessor implements ManualTimelineProcessor {
       );
 
       final process = await Process.start(FfmpegExecutables.ffmpeg, args);
+      cancellation.attach(process);
+      if (cancellation.isCanceled) {
+        process.kill();
+        await process.exitCode;
+        await _deletePartialOutput(job.project.outputPath);
+        return;
+      }
       final stderr = StringBuffer();
       final stdoutDone = Completer<void>();
       final stderrDone = Completer<void>();
@@ -123,6 +137,11 @@ class FfmpegManualTimelineProcessor implements ManualTimelineProcessor {
 
       final exitCode = await process.exitCode;
       await Future.wait([stdoutDone.future, stderrDone.future]);
+
+      if (cancellation.isCanceled) {
+        await _deletePartialOutput(job.project.outputPath);
+        return;
+      }
 
       if (exitCode == 0) {
         controller.add(
@@ -184,5 +203,30 @@ class FfmpegManualTimelineProcessor implements ManualTimelineProcessor {
     }
 
     return lines.join('\n');
+  }
+
+  Future<void> _deletePartialOutput(String outputPath) async {
+    try {
+      final output = File(outputPath);
+      if (await output.exists()) {
+        await output.delete();
+      }
+    } catch (_) {
+      // Cancellation still succeeds if the OS briefly retains the file lock.
+    }
+  }
+}
+
+class _FfmpegRenderCancellation {
+  Process? _process;
+  bool isCanceled = false;
+
+  void attach(Process process) {
+    _process = process;
+  }
+
+  void cancel() {
+    isCanceled = true;
+    _process?.kill();
   }
 }

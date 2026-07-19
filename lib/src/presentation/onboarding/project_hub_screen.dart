@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/brand.dart';
 import '../../application/app_session_store.dart';
 import '../render_home_screen.dart';
 import 'login_screen.dart';
@@ -155,7 +156,21 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Projects — ${widget.profile.name}'),
+        title: Row(
+          children: [
+            const BrandWordmark(size: 15),
+            const SizedBox(width: 14),
+            Flexible(
+              child: Text(
+                widget.profile.name,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
         actions: [
           TextButton.icon(
             onPressed: _signOut,
@@ -175,7 +190,8 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      Card(
+                      BrandEntrance(
+                        child: Card(
                         child: Padding(
                           padding: const EdgeInsets.all(24),
                           child: Column(
@@ -259,23 +275,30 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
                             ],
                           ),
                         ),
+                        ),
                       ),
                       const SizedBox(height: 20),
                       if (myProjects.isNotEmpty) ...[
-                        Text(
-                          'Recent projects',
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            fontWeight: FontWeight.w700,
+                        BrandEntrance(
+                          delay: const Duration(milliseconds: 120),
+                          child: Text(
+                            'Recent projects',
+                            style: theme.textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                         const SizedBox(height: 10),
-                        for (final project in myProjects)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: _ProjectTile(
-                              project: project,
-                              onOpen: () => _openProject(project),
-                              onDelete: () => _deleteProject(project),
+                        for (var i = 0; i < myProjects.length; i++)
+                          BrandEntrance(
+                            delay: Duration(milliseconds: 160 + i * 60),
+                            child: Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: _ProjectTile(
+                                project: myProjects[i],
+                                onOpen: () => _openProject(myProjects[i]),
+                                onDelete: () => _deleteProject(myProjects[i]),
+                              ),
                             ),
                           ),
                       ],
@@ -297,7 +320,7 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
   }
 }
 
-class _PipelineCard extends StatelessWidget {
+class _PipelineCard extends StatefulWidget {
   const _PipelineCard({
     required this.title,
     required this.subtitle,
@@ -313,21 +336,41 @@ class _PipelineCard extends StatelessWidget {
   final VoidCallback onTap;
 
   @override
+  State<_PipelineCard> createState() => _PipelineCardState();
+}
+
+class _PipelineCardState extends State<_PipelineCard> {
+  bool _hovered = false;
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final selected = widget.selected;
     final borderColor = selected
         ? theme.colorScheme.primary
+        : _hovered
+        ? theme.colorScheme.outline
         : theme.colorScheme.outlineVariant;
 
-    return Material(
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedScale(
+        scale: _hovered ? 1.02 : 1,
+        duration: const Duration(milliseconds: 140),
+        curve: Curves.easeOut,
+        child: Material(
       color: selected
           ? theme.colorScheme.primary.withValues(alpha: 0.08)
-          : theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.25),
+          : theme.colorScheme.surfaceContainerHighest.withValues(
+              alpha: _hovered ? 0.4 : 0.25,
+            ),
       borderRadius: BorderRadius.circular(12),
       child: InkWell(
         borderRadius: BorderRadius.circular(12),
-        onTap: onTap,
-        child: Container(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(12),
             border: Border.all(color: borderColor, width: selected ? 1.6 : 1),
@@ -337,7 +380,7 @@ class _PipelineCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(
-                icon,
+                widget.icon,
                 size: 28,
                 color: selected
                     ? theme.colorScheme.primary
@@ -349,14 +392,14 @@ class _PipelineCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      title,
+                      widget.title,
                       style: theme.textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w700,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      subtitle,
+                      widget.subtitle,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -372,6 +415,8 @@ class _PipelineCard extends StatelessWidget {
                 ),
             ],
           ),
+        ),
+      ),
         ),
       ),
     );

@@ -935,24 +935,37 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
 
   void _startPreviewAudio() {
     _stopPreviewAudio();
+    final playbackStartSeconds = _playheadSeconds;
+    const preloadLeadSeconds = 0.8;
     for (final clip in _clips.where(_canPreviewAudioClip)) {
       final delaySeconds = math.max(
         0.0,
-        clip.timelineStartSeconds - _playheadSeconds,
+        clip.timelineStartSeconds - playbackStartSeconds,
       );
+      final processStartDelay = math.max(
+        0.0,
+        delaySeconds - preloadLeadSeconds,
+      );
+      final audioDelay = delaySeconds - processStartDelay;
       void startAudio() {
         if (!_isPreviewPlaying || !mounted) {
           return;
         }
-        unawaited(_startAudioProcess(clip));
+        unawaited(
+          _startAudioProcess(
+            clip,
+            timelineReferenceSeconds: playbackStartSeconds,
+            outputDelaySeconds: audioDelay,
+          ),
+        );
       }
 
-      if (delaySeconds <= 0) {
+      if (processStartDelay <= 0) {
         startAudio();
       } else {
         _previewAudioTimers.add(
           Timer(
-            Duration(milliseconds: (delaySeconds * 1000).round()),
+            Duration(milliseconds: (processStartDelay * 1000).round()),
             startAudio,
           ),
         );
@@ -968,10 +981,14 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
         (clip.isAudio || clip.isVideo);
   }
 
-  Future<void> _startAudioProcess(TimelineClip clip) async {
+  Future<void> _startAudioProcess(
+    TimelineClip clip, {
+    required double timelineReferenceSeconds,
+    double outputDelaySeconds = 0,
+  }) async {
     final speed = clip.speed.clamp(0.1, 100.0).toDouble();
     // Timeline (wall) offset into the clip and the wall time still to play.
-    final clipOffset = (_playheadSeconds - clip.timelineStartSeconds)
+    final clipOffset = (timelineReferenceSeconds - clip.timelineStartSeconds)
         .clamp(0.0, clip.durationSeconds)
         .toDouble();
     final remainingWallSeconds = clip.durationSeconds - clipOffset;
@@ -1005,7 +1022,10 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
 
     // ffplay runs on real time, so the cutoff is measured in wall time.
     final cutoffDeadline = DateTime.now().add(
-      Duration(microseconds: (remainingWallSeconds * 1000000).round()),
+      Duration(
+        microseconds: ((remainingWallSeconds + outputDelaySeconds) * 1000000)
+            .round(),
+      ),
     );
     final volume = '${(clip.volume.clamp(0.0, 2.0) * 100).round()}';
 
@@ -1028,6 +1048,10 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
     }
 
     final tempoFilters = FilterSnippets.audioTempo(speed);
+    final delayFilter = outputDelaySeconds > 0.001
+        ? 'adelay=${(outputDelaySeconds * 1000).round()}:all=1'
+        : null;
+    final playbackFilters = <String>[...tempoFilters, ?delayFilter];
     try {
       final process = await Process.start(
         FfmpegExecutables.ffplay,
@@ -1037,6 +1061,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
                 '-autoexit',
                 '-loglevel',
                 'quiet',
+                if (delayFilter != null) ...['-af', delayFilter],
                 '-volume',
                 volume,
                 reversedTempPath,
@@ -1050,9 +1075,9 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
                 _ffmpegNumber(readStartSeconds),
                 '-t',
                 _ffmpegNumber(readDurationSeconds),
-                if (tempoFilters.isNotEmpty) ...[
+                if (playbackFilters.isNotEmpty) ...[
                   '-af',
-                  tempoFilters.join(','),
+                  playbackFilters.join(','),
                 ],
                 '-volume',
                 volume,
@@ -1109,10 +1134,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
           '${_ffmpegNumber(readDurationSeconds)}_${_ffmpegNumber(speed)}';
       final outputPath = p.join(cacheDir.path, '$key.wav');
       final outputFile = File(outputPath);
-      final filters = <String>[
-        'areverse',
-        ...FilterSnippets.audioTempo(speed),
-      ];
+      final filters = <String>['areverse', ...FilterSnippets.audioTempo(speed)];
       if (!outputFile.existsSync()) {
         final result = await Process.run(FfmpegExecutables.ffmpeg, <String>[
           '-y',
@@ -1331,9 +1353,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
           _isRendering = false;
           _progress = null;
         });
-        unawaited(
-          DesktopNotifier.show(title: 'Export failed', body: '$error'),
-        );
+        unawaited(DesktopNotifier.show(title: 'Export failed', body: '$error'));
       },
       onDone: () {
         setState(() {
@@ -1341,6 +1361,23 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
         });
       },
     );
+  }
+
+  Future<void> _cancelExport() async {
+    if (!_isRendering) {
+      return;
+    }
+    final subscription = _renderSubscription;
+    _renderSubscription = null;
+    await subscription?.cancel();
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _isRendering = false;
+      _progress = null;
+      _status = 'Export canceled.';
+    });
   }
 
   void _offerPublish(String videoPath) {
@@ -1365,7 +1402,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF080808),
+      backgroundColor: const Color(0xFF120F0A),
       builder: (context) {
         return DraggableScrollableSheet(
           initialChildSize: 0.85,
@@ -1461,6 +1498,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
               });
             },
             onExport: _exportTimeline,
+            onCancelExport: _cancelExport,
             onOpenProject: _openProject,
             onSaveProject: _saveProject,
             onUndo: _undo,
@@ -1850,7 +1888,7 @@ class _VerticalResizeHandle extends StatelessWidget {
             child: Container(
               width: 2,
               decoration: BoxDecoration(
-                color: const Color(0xFF343434),
+                color: const Color(0xFF39352B),
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
@@ -1879,7 +1917,7 @@ class _HorizontalResizeHandle extends StatelessWidget {
             child: Container(
               height: 2,
               decoration: BoxDecoration(
-                color: const Color(0xFF343434),
+                color: const Color(0xFF39352B),
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
@@ -1995,7 +2033,7 @@ class _PlaybackControls extends StatelessWidget {
           Text(
             _seconds(timelineDuration),
             style: const TextStyle(
-              color: Color(0xFFD0D0D0),
+              color: Color(0xFFCEC9BD),
               fontFeatures: [FontFeature.tabularFigures()],
             ),
           ),
@@ -2023,6 +2061,7 @@ class _EditorToolbar extends StatelessWidget {
     required this.onBlurredBackgroundChanged,
     required this.onEditorViewChanged,
     required this.onExport,
+    required this.onCancelExport,
     required this.onOpenProject,
     required this.onSaveProject,
     required this.onUndo,
@@ -2045,6 +2084,7 @@ class _EditorToolbar extends StatelessWidget {
   final ValueChanged<bool> onBlurredBackgroundChanged;
   final ValueChanged<_EditorView> onEditorViewChanged;
   final VoidCallback onExport;
+  final VoidCallback onCancelExport;
   final VoidCallback onOpenProject;
   final VoidCallback onSaveProject;
   final VoidCallback onUndo;
@@ -2096,14 +2136,13 @@ class _EditorToolbar extends StatelessWidget {
             ),
           );
           final exportButton = FilledButton.icon(
-            onPressed: canExport ? onExport : null,
+            onPressed: isRendering
+                ? onCancelExport
+                : (canExport ? onExport : null),
             icon: isRendering
-                ? const SizedBox.square(
-                    dimension: 18,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
+                ? const Icon(Icons.cancel_outlined)
                 : const Icon(Icons.ios_share_outlined),
-            label: Text(isRendering ? 'Exporting' : 'Export Timeline'),
+            label: Text(isRendering ? 'Cancel Export' : 'Export Timeline'),
           );
           final blurToggle = FilterChip(
             avatar: const Icon(Icons.blur_on_outlined, size: 18),
@@ -2197,7 +2236,7 @@ class _EditorToolbar extends StatelessWidget {
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFFD0D0D0),
+                  color: const Color(0xFFCEC9BD),
                 ),
               ),
             ],
@@ -2268,7 +2307,7 @@ class _MediaBinPanel extends StatelessWidget {
                       ? const Center(
                           child: Text(
                             'No clips',
-                            style: TextStyle(color: Color(0xFF9A9A9A)),
+                            style: TextStyle(color: Color(0xFF8A857A)),
                           ),
                         )
                       : ListView.separated(
@@ -2353,10 +2392,10 @@ class _TransitionLibraryTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(10),
-      color: active ? const Color(0xFF303030) : const Color(0xFF151515),
+      color: active ? const Color(0xFF39352B) : const Color(0xFF191510),
       child: Row(
         children: [
-          Icon(_transitionIconData(transition), color: const Color(0xFFB8B8B8)),
+          Icon(_transitionIconData(transition), color: const Color(0xFFB9B4A8)),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -2367,7 +2406,7 @@ class _TransitionLibraryTile extends StatelessWidget {
           const Icon(
             Icons.drag_indicator_outlined,
             size: 18,
-            color: Color(0xFF777777),
+            color: Color(0xFF8A857A),
           ),
         ],
       ),
@@ -2389,10 +2428,10 @@ class _MediaBinTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = clip.isVideo
-        ? const Color(0xFF6F97A5)
+        ? const Color(0xFF7D8DFA)
         : const Color(0xFF668C72);
     return Material(
-      color: selected ? const Color(0xFF262626) : const Color(0xFF151515),
+      color: selected ? const Color(0xFF2C2719) : const Color(0xFF191510),
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -2423,7 +2462,7 @@ class _MediaBinTile extends StatelessWidget {
                       '${_seconds(clip.timelineStartSeconds)} - '
                       '${_seconds(clip.timelineEndSeconds)}',
                       style: const TextStyle(
-                        color: Color(0xFF9A9A9A),
+                        color: Color(0xFF8A857A),
                         fontSize: 12,
                       ),
                     ),
@@ -2518,14 +2557,14 @@ class _PreviewCanvasPanel extends StatelessWidget {
           aspectRatio: canvasPreset.width / canvasPreset.height,
           child: ClipRect(
             child: DecoratedBox(
-              decoration: const BoxDecoration(color: Color(0xFF050505)),
+              decoration: const BoxDecoration(color: Color(0xFF0D0B07)),
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   if (visibleVideoClips.isEmpty) {
                     return const Center(
                       child: Icon(
                         Icons.smart_display_outlined,
-                        color: Color(0xFF5C5C5C),
+                        color: Color(0xFF55503F),
                         size: 58,
                       ),
                     );
@@ -2655,6 +2694,7 @@ class _PreviewVideoLayer extends StatelessWidget {
     final hasThumbnail = thumbnailFile?.existsSync() ?? false;
     final hasStarted = playheadSeconds >= clip.timelineStartSeconds;
     final streamIsPlaying = isPlaying && hasStarted;
+    final shouldPreload = isPlaying && !hasStarted;
 
     return Positioned(
       left: left,
@@ -2683,7 +2723,7 @@ class _PreviewVideoLayer extends StatelessWidget {
                   : null,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: const Color(0xFF181818),
+                  color: const Color(0xFF221D15),
                   border: Border.all(
                     color: selected
                         ? const Color(0xFFFFFFFF)
@@ -2715,6 +2755,7 @@ class _PreviewVideoLayer extends StatelessWidget {
                             playheadSeconds: playheadSeconds,
                             previewSeekVersion: previewSeekVersion,
                             isPlaying: streamIsPlaying,
+                            preload: shouldPreload,
                             enabled: enableLiveFrames,
                             fallback: hasThumbnail
                                 ? Image.file(
@@ -2808,6 +2849,7 @@ class _LiveFramePreview extends StatefulWidget {
     required this.playheadSeconds,
     required this.previewSeekVersion,
     required this.isPlaying,
+    this.preload = false,
     required this.enabled,
     required this.fallback,
   });
@@ -2816,6 +2858,7 @@ class _LiveFramePreview extends StatefulWidget {
   final double playheadSeconds;
   final int previewSeekVersion;
   final bool isPlaying;
+  final bool preload;
   final bool enabled;
   final Widget fallback;
 
@@ -2859,9 +2902,21 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
     final jumpedWhilePlaying =
         widget.isPlaying &&
         (oldWidget.playheadSeconds - widget.playheadSeconds).abs() > 0.5;
+    final canStartPreloadedStream =
+        !oldWidget.isPlaying &&
+        widget.isPlaying &&
+        oldWidget.preload &&
+        !clipChanged &&
+        !playbackPipelineChanged &&
+        !explicitlySeeked;
+    if (canStartPreloadedStream) {
+      _streamPlayer.startPlayback();
+      return;
+    }
     if (clipChanged ||
         enabledChanged ||
         playbackChanged ||
+        oldWidget.preload != widget.preload ||
         playbackPipelineChanged ||
         explicitlySeeked ||
         seekedWhilePaused ||
@@ -2930,13 +2985,15 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
 
     if (widget.isPlaying) {
       unawaited(_startStream());
+    } else if (widget.preload) {
+      unawaited(_startStream(preload: true));
     } else {
       _streamPlayer.stop();
       unawaited(_loadFrame());
     }
   }
 
-  Future<void> _startStream() async {
+  Future<void> _startStream({bool preload = false}) async {
     final sourceSeconds = _sourceSeconds();
     final speed = widget.clip.speed.clamp(0.1, 100.0).toDouble();
     final previewFrameRate = widget.clip.sourceFrameRate
@@ -2955,6 +3012,7 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
         floorSeconds: widget.clip.trimStartSeconds,
         displayFps: previewFrameRate,
         speed: speed,
+        preload: preload,
       );
     } else {
       final remaining = widget.clip.trimEndSeconds - sourceSeconds;
@@ -2968,6 +3026,7 @@ class _LiveFramePreviewState extends State<_LiveFramePreview> {
         sourceDurationSeconds: remaining,
         displayFps: previewFrameRate,
         speed: speed,
+        preload: preload,
       );
     }
   }
@@ -3246,12 +3305,12 @@ class _TimelinePanelState extends State<_TimelinePanel> {
                                         horizontal: 5,
                                         vertical: 2,
                                       ),
-                                      color: const Color(0xFF6F97A5),
+                                      color: const Color(0xFF7D8DFA),
                                       child: Text(
                                         'END ${_seconds(selectedClip.timelineEndSeconds)}',
                                         maxLines: 1,
                                         style: const TextStyle(
-                                          color: Color(0xFF050505),
+                                          color: Color(0xFF0D0B07),
                                           fontSize: 9,
                                           fontWeight: FontWeight.w800,
                                         ),
@@ -3261,7 +3320,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
                                       child: Center(
                                         child: Container(
                                           width: 1,
-                                          color: const Color(0xFF6F97A5),
+                                          color: const Color(0xFF7D8DFA),
                                         ),
                                       ),
                                     ),
@@ -3299,7 +3358,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
                                 child: Center(
                                   child: Container(
                                     width: 3,
-                                    color: const Color(0xFFFFF2A6),
+                                    color: const Color(0xFFC9F63C),
                                   ),
                                 ),
                               ),
@@ -3401,11 +3460,11 @@ class _TimelineRuler extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(width: 1, height: 8, color: const Color(0xFF5C5C5C)),
+                Container(width: 1, height: 8, color: const Color(0xFF55503F)),
                 Text(
                   _rulerLabel(marker * markerStepSeconds),
                   style: const TextStyle(
-                    color: Color(0xFF9A9A9A),
+                    color: Color(0xFF8A857A),
                     fontSize: 11,
                   ),
                 ),
@@ -3501,9 +3560,9 @@ class _TimelineTrackRow extends StatelessWidget {
           decoration: BoxDecoration(
             color: acceptingDrop ? const Color(0x223FAF86) : Colors.transparent,
             border: Border(
-              top: const BorderSide(color: Color(0xFF2A2A2A)),
+              top: const BorderSide(color: Color(0xFF302B20)),
               bottom: acceptingDrop
-                  ? const BorderSide(color: Color(0xFF6F97A5))
+                  ? const BorderSide(color: Color(0xFF7D8DFA))
                   : BorderSide.none,
             ),
           ),
@@ -3514,7 +3573,7 @@ class _TimelineTrackRow extends StatelessWidget {
                 top: 8,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: const Color(0xE6101010),
+                    color: const Color(0xE6161309),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Padding(
@@ -3525,7 +3584,7 @@ class _TimelineTrackRow extends StatelessWidget {
                     child: Text(
                       track.label,
                       style: const TextStyle(
-                        color: Color(0xFFD0D0D0),
+                        color: Color(0xFFCEC9BD),
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
@@ -3698,7 +3757,7 @@ class _TimelineClipBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = clip.isVideo
-        ? const Color(0xFF466C7A)
+        ? const Color(0xFF3D53F5)
         : const Color(0xFF466B52);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -3754,7 +3813,7 @@ class _TimelineClipBlock extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: Color(0xFFF1F1F1),
+                              color: Color(0xFFFAF7F1),
                               fontWeight: FontWeight.w700,
                               fontSize: 12,
                             ),
@@ -3782,7 +3841,7 @@ class _TimelineClipBlock extends StatelessWidget {
                         foregroundDecoration: const BoxDecoration(
                           border: Border(
                             right: BorderSide(
-                              color: Color(0xFFDFDFDF),
+                              color: Color(0xFFE4E0D6),
                               width: 1,
                             ),
                           ),
@@ -3882,11 +3941,11 @@ class _TransitionDragChip extends StatelessWidget {
       message: 'Drag ${_transitionName(transition)}',
       child: Container(
         padding: const EdgeInsets.all(3),
-        color: active ? const Color(0xFF303030) : const Color(0xCC111111),
+        color: active ? const Color(0xFF39352B) : const Color(0xCC111111),
         child: Icon(
           _transitionIconData(transition),
           size: 14,
-          color: const Color(0xFFE8E8E8),
+          color: const Color(0xFFEDEAE2),
         ),
       ),
     );
@@ -3932,7 +3991,7 @@ class _AdvancedVideoInspectorPanel extends StatelessWidget {
               children: [
                 const Icon(
                   Icons.movie_creation_outlined,
-                  color: Color(0xFF6F97A5),
+                  color: Color(0xFF7D8DFA),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
@@ -3946,9 +4005,7 @@ class _AdvancedVideoInspectorPanel extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 12),
-            TabBar(
-              isScrollable: true,
-              tabAlignment: TabAlignment.start,
+            _InspectorTabNavigator(
               tabs: const [
                 Tab(icon: Icon(Icons.open_with_outlined), text: 'Transform'),
                 Tab(icon: Icon(Icons.color_lens_outlined), text: 'Grade'),
@@ -4602,6 +4659,51 @@ class _AdvancedVideoInspectorPanel extends StatelessWidget {
   }
 }
 
+class _InspectorTabNavigator extends StatelessWidget {
+  const _InspectorTabNavigator({required this.tabs});
+
+  final List<Widget> tabs;
+
+  @override
+  Widget build(BuildContext context) {
+    final controller = DefaultTabController.of(context);
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final index = controller.index;
+        return Row(
+          children: [
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Previous inspector section',
+              onPressed: index > 0
+                  ? () => controller.animateTo(index - 1)
+                  : null,
+              icon: const Icon(Icons.chevron_left),
+            ),
+            Expanded(
+              child: TabBar(
+                controller: controller,
+                isScrollable: true,
+                tabAlignment: TabAlignment.start,
+                tabs: tabs,
+              ),
+            ),
+            IconButton(
+              visualDensity: VisualDensity.compact,
+              tooltip: 'Next inspector section',
+              onPressed: index < tabs.length - 1
+                  ? () => controller.animateTo(index + 1)
+                  : null,
+              icon: const Icon(Icons.chevron_right),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 class _InspectorPanel extends StatelessWidget {
   const _InspectorPanel({
     required this.clip,
@@ -4623,7 +4725,7 @@ class _InspectorPanel extends StatelessWidget {
           ? const Center(
               child: Text(
                 'Select a clip',
-                style: TextStyle(color: Color(0xFF9A9A9A)),
+                style: TextStyle(color: Color(0xFF8A857A)),
               ),
             )
           : Scrollbar(
@@ -4639,7 +4741,7 @@ class _InspectorPanel extends StatelessWidget {
                               ? Icons.movie_creation_outlined
                               : Icons.graphic_eq_outlined,
                           color: clip.isVideo
-                              ? const Color(0xFF6F97A5)
+                              ? const Color(0xFF7D8DFA)
                               : const Color(0xFF668C72),
                         ),
                         const SizedBox(width: 10),
@@ -4920,13 +5022,13 @@ class _ValueControl extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 19, color: const Color(0xFFD0D0D0)),
+              Icon(icon, size: 19, color: const Color(0xFFCEC9BD)),
               const SizedBox(width: 10),
               Expanded(child: Text(label)),
               Text(
                 displayValue,
                 style: const TextStyle(
-                  color: Color(0xFFD0D0D0),
+                  color: Color(0xFFCEC9BD),
                   fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
@@ -4962,9 +5064,9 @@ class _EditorPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF111111),
+        color: const Color(0xFF1C1812),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF303030)),
+        border: Border.all(color: const Color(0xFF39352B)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -5030,9 +5132,9 @@ class _InlineNotice extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF1A1A1A),
+        color: const Color(0xFF241F16),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF3A3A3A)),
+        border: Border.all(color: const Color(0xFF443F33)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),

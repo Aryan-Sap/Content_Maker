@@ -254,9 +254,9 @@ class _PublishPanelState extends State<PublishPanel> {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF111111),
+        color: const Color(0xFF1C1812),
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF303030)),
+        border: Border.all(color: const Color(0xFF39352B)),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -279,7 +279,7 @@ class _PublishPanelState extends State<PublishPanel> {
             Text(
               'Post the rendered short straight to your channels.',
               style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFFBFBFBF),
+                color: const Color(0xFFB9B4A8),
               ),
             ),
             const SizedBox(height: 18),
@@ -500,8 +500,8 @@ class _DestinationTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF151515),
-          border: Border.all(color: const Color(0xFF303030)),
+          color: const Color(0xFF191510),
+          border: Border.all(color: const Color(0xFF39352B)),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -511,7 +511,7 @@ class _DestinationTile extends StatelessWidget {
                 value: selected,
                 onChanged: enabled ? (value) => onToggle(value ?? false) : null,
               ),
-              Icon(icon, size: 20, color: const Color(0xFFD0D0D0)),
+              Icon(icon, size: 20, color: const Color(0xFFCEC9BD)),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -524,14 +524,14 @@ class _DestinationTile extends StatelessWidget {
                         style: theme.textTheme.bodySmall?.copyWith(
                           color: connected
                               ? const Color(0xFF8FD19E)
-                              : const Color(0xFF9A9A9A),
+                              : const Color(0xFF8A857A),
                         ),
                       )
                     else if (!requiresConnection && selected)
                       Text(
                         'Manual hand-off',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: const Color(0xFF9A9A9A),
+                          color: const Color(0xFF8A857A),
                         ),
                       ),
                   ],
@@ -577,7 +577,7 @@ class _ProgressRow extends StatelessWidget {
     return switch (progress.status) {
       PublishJobStatus.completed => const Color(0xFF8FD19E),
       PublishJobStatus.failed => const Color(0xFFE59A9A),
-      _ => const Color(0xFFD0D0D0),
+      _ => const Color(0xFFCEC9BD),
     };
   }
 
@@ -614,7 +614,7 @@ class _ProgressRow extends StatelessWidget {
           Text(
             progress.message,
             style: theme.textTheme.bodySmall?.copyWith(
-              color: const Color(0xFFC8C8C8),
+              color: const Color(0xFFC4BFB3),
             ),
           ),
           if (url != null)
@@ -633,7 +633,7 @@ class _ProgressRow extends StatelessWidget {
                         const Icon(
                           Icons.open_in_new_outlined,
                           size: 14,
-                          color: Color(0xFF9FC3E8),
+                          color: Color(0xFF7D8DFA),
                         ),
                         const SizedBox(width: 6),
                         Flexible(
@@ -641,9 +641,9 @@ class _ProgressRow extends StatelessWidget {
                             url,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodySmall?.copyWith(
-                              color: const Color(0xFF9FC3E8),
+                              color: const Color(0xFF7D8DFA),
                               decoration: TextDecoration.underline,
-                              decorationColor: const Color(0xFF9FC3E8),
+                              decorationColor: const Color(0xFF7D8DFA),
                             ),
                           ),
                         ),
@@ -671,8 +671,8 @@ class _InfoBanner extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF1A1A1A),
-          border: Border.all(color: const Color(0xFF3A3A3A)),
+          color: const Color(0xFF241F16),
+          border: Border.all(color: const Color(0xFF443F33)),
         ),
         child: Padding(
           padding: const EdgeInsets.all(12),

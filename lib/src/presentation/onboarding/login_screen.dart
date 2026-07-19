@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../app/brand.dart';
 import '../../application/app_session_store.dart';
 import 'project_hub_screen.dart';
 
@@ -129,27 +130,42 @@ class _LoginScreenState extends State<LoginScreen> {
           padding: const EdgeInsets.all(32),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 460),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(28),
-                child: Column(
+            child: BrandEntrance(
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
-                      Icons.movie_filter_outlined,
-                      size: 48,
-                      color: theme.colorScheme.primary,
+                    const BrandEntrance(
+                      delay: Duration(milliseconds: 80),
+                      child: Center(child: BrandWordmark(size: 24)),
                     ),
-                    const SizedBox(height: 12),
-                    Text(
-                      'Content Maker',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.headlineMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
+                    const SizedBox(height: 14),
+                    BrandEntrance(
+                      delay: const Duration(milliseconds: 160),
+                      child: Center(
+                        child: Wrap(
+                          spacing: 14,
+                          runSpacing: 8,
+                          alignment: WrapAlignment.center,
+                          children: const [
+                            BrandSticker(
+                              label: 'MAKE CONTENT EASY',
+                              rotationDegrees: -3,
+                            ),
+                            BrandSticker(
+                              label: '100% FREE',
+                              rotationDegrees: 2,
+                              color: Brand.blue,
+                              textColor: Brand.cream,
+                            ),
+                          ],
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 6),
+                    const SizedBox(height: 14),
                     Text(
                       'Sign in with a local profile to continue.',
                       textAlign: TextAlign.center,
@@ -201,6 +217,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ),
                     ],
                   ],
+                  ),
                 ),
               ),
             ),

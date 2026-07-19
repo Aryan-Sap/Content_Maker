@@ -91,6 +91,7 @@ class FrameStreamPlayer {
   Timer? _displayTimer;
   bool _subscriptionPaused = false;
   bool _decoding = false;
+  bool _playbackStarted = false;
   int _generation = 0;
 
   // Wall-clock pacing state.
@@ -119,6 +120,7 @@ class FrameStreamPlayer {
     double? sourceDurationSeconds,
     double speed = 1,
     int maxDimension = 960,
+    bool preload = false,
   }) async {
     stop();
     final generation = _generation;
@@ -154,9 +156,29 @@ class FrameStreamPlayer {
         return;
       }
       _attachProcess(process, generation);
-      _startDisplayTimer(generation);
+      if (!preload) {
+        startPlayback();
+      } else if (_playbackStarted) {
+        _startDisplayTimer(generation);
+      }
     } catch (_) {
       return;
+    }
+  }
+
+  /// Starts a stream that was opened with [preload] enabled.
+  ///
+  /// Preloading lets FFmpeg decode into the bounded queue before a timeline
+  /// cut. At the cut, playback begins from the already-buffered first frame
+  /// instead of waiting for a new process and decoder to start.
+  void startPlayback() {
+    if (_playbackStarted) {
+      return;
+    }
+    _playbackStarted = true;
+    if ((_process != null || _queue.isNotEmpty) &&
+        (!_reverse || _reverseSegmentComplete)) {
+      _startDisplayTimer(_generation);
     }
   }
 
@@ -171,9 +193,11 @@ class FrameStreamPlayer {
     required double displayFps,
     double speed = 1,
     int maxDimension = 960,
+    bool preload = false,
   }) async {
     stop();
     _reverse = true;
+    _playbackStarted = !preload;
     _displayFps = displayFps;
     _reverseFloorSeconds = floorSeconds;
     _reverseInputPath = inputPath;
@@ -231,19 +255,16 @@ class FrameStreamPlayer {
       _parser.reset();
       // Reverse segments buffer fully (compressed JPEGs) before playback —
       // the last decoded frame has to be shown first.
-      _subscription = process.stdout.listen(
-        (chunk) {
-          if (generation != _generation) {
-            return;
-          }
-          _queue.addAll(_parser.feed(chunk));
-          // Safety valve: never hold more than two segments' worth.
-          while (_queue.length > _reverseSegmentFrames * 2) {
-            _queue.removeAt(0);
-          }
-        },
-        onError: (_) {},
-      );
+      _subscription = process.stdout.listen((chunk) {
+        if (generation != _generation) {
+          return;
+        }
+        _queue.addAll(_parser.feed(chunk));
+        // Safety valve: never hold more than two segments' worth.
+        while (_queue.length > _reverseSegmentFrames * 2) {
+          _queue.removeAt(0);
+        }
+      }, onError: (_) {});
       unawaited(process.stderr.drain<void>());
       unawaited(
         process.exitCode.then((_) {
@@ -254,7 +275,9 @@ class FrameStreamPlayer {
           if (identical(_process, process)) {
             _process = null;
           }
-          _startDisplayTimer(generation);
+          if (_playbackStarted) {
+            _startDisplayTimer(generation);
+          }
         }),
       );
     } catch (_) {
@@ -392,6 +415,7 @@ class FrameStreamPlayer {
     _queue.clear();
     _parser.reset();
     _decoding = false;
+    _playbackStarted = false;
     _paceStartedAt = null;
     _framesConsumed = 0;
     _reverseSegmentComplete = false;

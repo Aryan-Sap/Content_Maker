@@ -243,21 +243,13 @@ class TiktokPublisher implements VideoPublisher {
         await handle.setPosition(offset);
         final bytes = await handle.read(end - offset);
 
-        final response = await _client.put(
-          Uri.parse(uploadUrl),
-          headers: {
-            'Content-Type': 'video/mp4',
-            'Content-Length': '${end - offset}',
-            'Content-Range': 'bytes $offset-${end - 1}/$totalBytes',
-          },
-          body: bytes,
+        await _putChunkWithRetry(
+          uploadUrl: uploadUrl,
+          bytes: bytes,
+          offset: offset,
+          end: end,
+          totalBytes: totalBytes,
         );
-
-        if (response.statusCode != 200 &&
-            response.statusCode != 201 &&
-            response.statusCode != 206) {
-          throw Exception('TikTok chunk upload failed: ${response.body}');
-        }
         offset = end;
         onProgress(offset);
       }
@@ -266,11 +258,59 @@ class TiktokPublisher implements VideoPublisher {
     }
   }
 
+  /// Uploads one chunk, retrying transient failures so a network blip during
+  /// a long upload doesn't scrap the whole publish.
+  Future<void> _putChunkWithRetry({
+    required String uploadUrl,
+    required List<int> bytes,
+    required int offset,
+    required int end,
+    required int totalBytes,
+  }) async {
+    const maxAttempts = 3;
+    Object? lastError;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      http.Response? response;
+      try {
+        response = await _client.put(
+          Uri.parse(uploadUrl),
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Content-Length': '${end - offset}',
+            'Content-Range': 'bytes $offset-${end - 1}/$totalBytes',
+          },
+          body: bytes,
+        );
+      } catch (error) {
+        // Network-level failure: transient, retry.
+        lastError = error;
+      }
+      if (response != null) {
+        if (response.statusCode == 200 ||
+            response.statusCode == 201 ||
+            response.statusCode == 206) {
+          return;
+        }
+        // 4xx responses are not transient; surface them immediately.
+        if (response.statusCode >= 400 && response.statusCode < 500) {
+          throw Exception('TikTok chunk upload failed: ${response.body}');
+        }
+        lastError = Exception('TikTok chunk upload failed: ${response.body}');
+      }
+      if (attempt < maxAttempts) {
+        await Future<void>.delayed(Duration(seconds: attempt * 2));
+      }
+    }
+    throw Exception('TikTok chunk upload failed after retries: $lastError');
+  }
+
   Future<PublishProgress> _pollStatus(
     String accessToken,
     String publishId,
   ) async {
-    for (var attempt = 0; attempt < 30; attempt++) {
+    // TikTok can take a while to process larger uploads; poll for ~3 minutes
+    // before falling back to the "finish in the app" message.
+    for (var attempt = 0; attempt < 90; attempt++) {
       await Future<void>.delayed(pollInterval);
       final response = await _client.post(
         Uri.parse('$_base/post/publish/status/fetch/'),

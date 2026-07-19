@@ -1,7 +1,7 @@
 import 'render_preset.dart';
 import 'video_asset.dart';
 
-enum RenderJobStatus { queued, running, completed, failed }
+enum RenderJobStatus { queued, running, completed, failed, canceled }
 
 class ShortsRenderJob {
   const ShortsRenderJob({
@@ -70,5 +70,7 @@ class RenderProgress {
   final String? outputPath;
 
   bool get isTerminal =>
-      status == RenderJobStatus.completed || status == RenderJobStatus.failed;
+      status == RenderJobStatus.completed ||
+      status == RenderJobStatus.failed ||
+      status == RenderJobStatus.canceled;
 }
