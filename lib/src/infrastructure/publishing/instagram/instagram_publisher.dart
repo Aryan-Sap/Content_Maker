@@ -14,24 +14,22 @@ import '../../../domain/publishing/video_publisher.dart';
 /// Official Reels publishing (Graph API) requires a Business/Creator account
 /// linked to a Facebook Page and a publicly hosted video URL. For a personal
 /// account there is no compliant API, and automating the app UI would violate
-/// Instagram's terms. This adapter therefore performs the smoothest compliant
-/// hand-off possible:
+/// Instagram's terms. This adapter therefore performs a fully offline
+/// hand-off — YouTube/TikTok upload automatically alongside it, while the
+/// Instagram post stays in the user's hands:
 ///
 /// 1. Copies the finished caption (title + hashtags) to the clipboard.
 /// 2. Reveals the rendered file in the file manager (selected, on Windows).
-/// 3. Opens Instagram's web uploader in the browser.
 ///
-/// The user drags the file in and pastes the caption — two gestures.
+/// It deliberately does NOT open Instagram's web uploader: that forces a
+/// browser login (often with 2FA) even when the user intends to post from
+/// their phone, so the browser step hurt more than it helped.
 ///
 /// To enable true automation later, add an `InstagramGraphPublisher`
 /// implementing [VideoPublisher] and swap it in wherever this is constructed —
 /// no caller changes required.
 class InstagramPublisher implements VideoPublisher {
   const InstagramPublisher();
-
-  static final Uri _webUploadUri = Uri.parse(
-    'https://www.instagram.com/reels/create/',
-  );
 
   @override
   PublishTarget get target => PublishTarget.instagramReel;
@@ -44,7 +42,7 @@ class InstagramPublisher implements VideoPublisher {
     yield PublishProgress(
       target: target,
       status: PublishJobStatus.processing,
-      fraction: 0.2,
+      fraction: 0.3,
       message: 'Copying your caption to the clipboard…',
     );
     final caption = job.metadata.caption;
@@ -59,30 +57,21 @@ class InstagramPublisher implements VideoPublisher {
     yield PublishProgress(
       target: target,
       status: PublishJobStatus.processing,
-      fraction: 0.5,
+      fraction: 0.7,
       message: 'Showing the rendered file…',
     );
     await _revealInFileManager(job.videoPath);
 
     yield PublishProgress(
       target: target,
-      status: PublishJobStatus.processing,
-      fraction: 0.8,
-      message: 'Opening Instagram…',
-    );
-    await _openInstagram();
-
-    yield PublishProgress(
-      target: target,
       status: PublishJobStatus.completed,
       fraction: 1,
       message: captionCopied
-          ? 'Ready to post: drag the selected file into Instagram and paste '
-                'the caption (already on your clipboard). Personal accounts '
-                'cannot be auto-posted via the official API.'
-          : 'Ready to post: drag the selected file into the Instagram '
-                'uploader. Personal accounts cannot be auto-posted via the '
-                'official API.',
+          ? 'Ready for Instagram: the file is selected in Explorer and the '
+                'caption is on your clipboard — post it from the Instagram '
+                'app whenever you like.'
+          : 'Ready for Instagram: the file is selected in Explorer — post it '
+                'from the Instagram app whenever you like.',
     );
   }
 
@@ -96,14 +85,6 @@ class InstagramPublisher implements VideoPublisher {
       await launchUrl(Uri.file(File(path).parent.path));
     } catch (_) {
       // Best-effort: the completion message tells the user where the file is.
-    }
-  }
-
-  Future<void> _openInstagram() async {
-    try {
-      await launchUrl(_webUploadUri, mode: LaunchMode.externalApplication);
-    } catch (_) {
-      // Best-effort; the user can open Instagram manually.
     }
   }
 }

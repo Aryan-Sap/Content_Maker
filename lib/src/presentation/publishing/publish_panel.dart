@@ -378,8 +378,10 @@ class _PublishPanelState extends State<PublishPanel> {
                 icon: Icons.info_outline,
                 text:
                     'Instagram Reels can\'t be auto-posted from a personal '
-                    'account. The rendered file will be opened for a manual '
-                    'upload instead.',
+                    'account. The file will be selected in Explorer and the '
+                    'caption copied to your clipboard — post it yourself '
+                    'whenever you like. YouTube and TikTok still upload '
+                    'automatically.',
               ),
             if (_selected.contains(PublishTarget.tiktok))
               const _InfoBanner(
