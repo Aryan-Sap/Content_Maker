@@ -21,7 +21,7 @@ class ManualRenderJob {
     }
 
     for (final clip in project.clips) {
-      if (clip.path.trim().isEmpty) {
+      if (!clip.isText && clip.path.trim().isEmpty) {
         return 'Every clip needs a source path.';
       }
       if (clip.timelineStartSeconds < 0) {
@@ -52,6 +52,16 @@ class ManualRenderJob {
       }
       if (clip.audioFadeInSeconds < 0 || clip.audioFadeOutSeconds < 0) {
         return '${clip.name} audio fades cannot be negative.';
+      }
+      final text = clip.text;
+      if (clip.isText && text != null) {
+        if (text.size <= 0) {
+          return '${clip.name} font size must be greater than zero.';
+        }
+        if (text.fadeOutSeconds < 0 ||
+            text.fadeOutSeconds > clip.durationSeconds) {
+          return '${clip.name} fade-out must fit within its visible duration.';
+        }
       }
     }
     return null;

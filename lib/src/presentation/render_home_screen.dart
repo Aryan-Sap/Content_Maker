@@ -18,6 +18,7 @@ import '../domain/rendering/video_asset.dart';
 import '../infrastructure/ffmpeg/ffmpeg_video_processor.dart';
 import '../infrastructure/notifications/desktop_notifier.dart';
 import 'manual_editor_screen.dart';
+import 'onboarding/guided_tour_overlay.dart';
 import 'publishing/accounts_dialog.dart';
 import 'publishing/publish_panel.dart';
 import 'widgets/rendered_clip_player.dart';
@@ -152,6 +153,8 @@ class RenderHomeScreen extends StatefulWidget {
     super.key,
     this.projectName,
     this.initialPipeline = ProjectPipeline.simple,
+    this.guidedTour = false,
+    this.onGuidedTourFinished,
   });
 
   /// Shown in the app bar when opened from the project hub.
@@ -160,6 +163,8 @@ class RenderHomeScreen extends StatefulWidget {
   /// Chooses the workspace the project opens into (the switcher stays
   /// available so users can move between pipelines at any time).
   final ProjectPipeline initialPipeline;
+  final bool guidedTour;
+  final Future<void> Function()? onGuidedTourFinished;
 
   @override
   State<RenderHomeScreen> createState() => _RenderHomeScreenState();
@@ -174,6 +179,16 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   final _trimStartController = TextEditingController(text: '0');
   final _trimEndController = TextEditingController();
   final _workspaceScrollController = ScrollController();
+  final _addVideosTourKey = GlobalKey();
+  final _canvasTourKey = GlobalKey();
+  final _savePresetTourKey = GlobalKey();
+  final _styleTourKey = GlobalKey();
+  final _renderTourKey = GlobalKey();
+  final _modeSwitcherTourKey = GlobalKey();
+  final _manualAddVideoTourKey = GlobalKey();
+  final _manualAddTextTourKey = GlobalKey();
+  final _manualTextFieldTourKey = GlobalKey();
+  final _manualExportTourKey = GlobalKey();
   final _exportUseCase = const CreateShortsExport(FfmpegVideoProcessor());
   final _presetStore = const AutoEditPresetStore();
 
@@ -195,6 +210,9 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   int _renderGeneration = 0;
   double _sourceAudioVolume = 1;
   double _overlayAudioVolume = 0.75;
+  late bool _guidedTourActive;
+  int _guidedTourStep = 0;
+  bool _guidedTextAdded = false;
 
   bool get _canRender =>
       !_isRendering &&
@@ -216,6 +234,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
     _workspaceMode = widget.initialPipeline == ProjectPipeline.custom
         ? _WorkspaceMode.manual
         : _WorkspaceMode.automatic;
+    _guidedTourActive = widget.guidedTour;
     _sourceController.addListener(_suggestOutputPath);
     unawaited(_loadEditPresets());
   }
@@ -264,6 +283,164 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         _status = 'Could not load edit presets: $error';
       });
     }
+  }
+
+  void _setGuidedTourStep(int step) {
+    if (!_guidedTourActive) return;
+    setState(() => _guidedTourStep = step);
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final context = _guidedTourTargetKey.currentContext;
+      if (context != null) {
+        await Scrollable.ensureVisible(
+          context,
+          duration: const Duration(milliseconds: 420),
+          curve: Curves.easeOutCubic,
+          alignment: 0.45,
+        );
+        if (mounted) setState(() {});
+      }
+    });
+  }
+
+  GlobalKey get _guidedTourTargetKey => switch (_guidedTourStep) {
+    0 => _addVideosTourKey,
+    1 => _canvasTourKey,
+    2 => _savePresetTourKey,
+    3 => _styleTourKey,
+    4 => _renderTourKey,
+    5 => _modeSwitcherTourKey,
+    6 => _manualAddVideoTourKey,
+    7 => _manualAddTextTourKey,
+    8 => _manualTextFieldTourKey,
+    _ => _manualExportTourKey,
+  };
+
+  void _continueToManualEditor() {
+    setState(() => _workspaceMode = _WorkspaceMode.manual);
+    _setGuidedTourStep(6);
+  }
+
+  void _continueAfterAddText() {
+    _setGuidedTourStep(_guidedTextAdded ? 8 : 9);
+  }
+
+  Future<void> _finishGuidedTour() async {
+    if (mounted) setState(() => _guidedTourActive = false);
+    await widget.onGuidedTourFinished?.call();
+  }
+
+  Widget _buildGuidedTour() {
+    const total = 13;
+    return switch (_guidedTourStep) {
+      0 => GuidedTourOverlay(
+        targetKey: _addVideosTourKey,
+        step: 4,
+        totalSteps: total,
+        title: 'Import your footage',
+        description:
+            'Click Add Videos and choose a real clip. Content Maker will queue it and prepare an output path automatically.',
+        onSkip: _finishGuidedTour,
+        onNext: () => _setGuidedTourStep(1),
+      ),
+      1 => GuidedTourOverlay(
+        targetKey: _canvasTourKey,
+        step: 5,
+        totalSteps: total,
+        title: 'Choose the final format',
+        description:
+            'Select Vertical, Square, or Wide. The preview and export dimensions update immediately.',
+        onSkip: _finishGuidedTour,
+        onNext: () => _setGuidedTourStep(2),
+      ),
+      2 => GuidedTourOverlay(
+        targetKey: _savePresetTourKey,
+        step: 6,
+        totalSteps: total,
+        title: 'Reuse a look with presets',
+        description:
+            'Copy and paste edits between clips, or save the current settings as a reusable preset. You can simply continue for now.',
+        onSkip: _finishGuidedTour,
+        onNext: () => _setGuidedTourStep(3),
+      ),
+      3 => GuidedTourOverlay(
+        targetKey: _styleTourKey,
+        step: 7,
+        totalSteps: total,
+        title: 'Give the clip a look',
+        description:
+            'These treatments change the real colour grade. Sharpness, blur, motion, and audio controls continue below.',
+        onSkip: _finishGuidedTour,
+        onNext: () => _setGuidedTourStep(4),
+      ),
+      4 => GuidedTourOverlay(
+        targetKey: _renderTourKey,
+        step: 8,
+        totalSteps: total,
+        title: 'Render when it is ready',
+        description:
+            'The highlighted button runs the real FFmpeg export. Click it to render now, or continue the tour without waiting.',
+        onSkip: _finishGuidedTour,
+        actionLabel: 'Continue without rendering',
+        onAction: () => _setGuidedTourStep(5),
+      ),
+      5 => GuidedTourOverlay(
+        targetKey: _modeSwitcherTourKey,
+        step: 9,
+        totalSteps: total,
+        title: 'Switch editing methods',
+        description:
+            'Click Custom Editor. This is the actual workspace switcher, so you can move between both methods inside any project.',
+        onSkip: _finishGuidedTour,
+        accent: Brand.blue,
+        onNext: _continueToManualEditor,
+      ),
+      6 => GuidedTourOverlay(
+        targetKey: _manualAddVideoTourKey,
+        step: 10,
+        totalSteps: total,
+        title: 'Build the media library',
+        description:
+            'Add a video to the Custom Editor. It becomes a real timeline clip and opens its inspector.',
+        onSkip: _finishGuidedTour,
+        accent: Brand.blue,
+        onNext: () => _setGuidedTourStep(7),
+      ),
+      7 => GuidedTourOverlay(
+        targetKey: _manualAddTextTourKey,
+        step: 11,
+        totalSteps: total,
+        title: 'Add a text layer',
+        description:
+            'Click Add text. A real overlay is added at the playhead and selected on the timeline.',
+        onSkip: _finishGuidedTour,
+        accent: Brand.blue,
+        onNext: _continueAfterAddText,
+      ),
+      8 => GuidedTourOverlay(
+        targetKey: _manualTextFieldTourKey,
+        step: 12,
+        totalSteps: total,
+        title: 'Make the edit yours',
+        description:
+            'Replace “Your text” in the highlighted field. The live canvas and timeline update from the same edit.',
+        onSkip: _finishGuidedTour,
+        accent: Brand.blue,
+        onNext: () => _setGuidedTourStep(9),
+      ),
+      _ => GuidedTourOverlay(
+        targetKey: _manualExportTourKey,
+        step: 13,
+        totalSteps: total,
+        title: 'Export the full timeline',
+        description:
+            'This button renders every enabled timeline layer. Click it for a real export, or finish now and keep editing.',
+        onSkip: _finishGuidedTour,
+        accent: Brand.blue,
+        actionLabel: 'Finish hands-on tour',
+        onAction: _finishGuidedTour,
+      ),
+    };
   }
 
   AutoEditPreset _currentEditPreset({String? id, String? name}) {
@@ -535,6 +712,9 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
             ? 'Video queued.'
             : '${sourcePaths.length} videos queued.';
       });
+      if (_guidedTourActive && _guidedTourStep == 0) {
+        _setGuidedTourStep(1);
+      }
     } on PlatformException catch (error) {
       if (!mounted) {
         return;
@@ -629,6 +809,9 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         ),
       );
     });
+    if (_guidedTourActive && _guidedTourStep == 1) {
+      _setGuidedTourStep(2);
+    }
   }
 
   int _defaultForegroundHeight(_OutputResolution resolution) {
@@ -672,6 +855,9 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
       );
       _colorStyle = style;
     });
+    if (_guidedTourActive && _guidedTourStep == 3) {
+      _setGuidedTourStep(4);
+    }
   }
 
   void _setSharpness(double value) {
@@ -833,6 +1019,9 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
       _lastRenderedOutput = null;
       _status = isBatch ? 'Queued ${jobs.length} videos.' : 'Queued';
     });
+    if (_guidedTourActive && _guidedTourStep == 4) {
+      _setGuidedTourStep(5);
+    }
 
     var completed = 0;
     RenderProgress? terminalProgress;
@@ -1023,99 +1212,137 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
 
     final projectName = widget.projectName;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          children: [
-            const BrandWordmark(size: 15),
-            if (projectName != null) ...[
-              const SizedBox(width: 14),
-              Flexible(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
+    return Stack(
+      children: [
+        Scaffold(
+          appBar: AppBar(
+            title: Row(
+              children: [
+                const BrandWordmark(size: 15),
+                if (projectName != null) ...[
+                  const SizedBox(width: 14),
+                  Flexible(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Brand.surfaceRaised,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Brand.line),
+                      ),
+                      child: Text(
+                        projectName,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontFamily: Brand.bodyFont,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: Brand.muted,
+                        ),
+                      ),
+                    ),
                   ),
-                  decoration: BoxDecoration(
-                    color: Brand.surfaceRaised,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: Brand.line),
-                  ),
-                  child: Text(
-                    projectName,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontFamily: Brand.bodyFont,
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                      color: Brand.muted,
+                ],
+              ],
+            ),
+            actions: [
+              if (_workspaceMode == _WorkspaceMode.automatic)
+                Padding(
+                  padding: const EdgeInsets.only(right: 16),
+                  child: Center(
+                    child: Text(
+                      '${_preset.composition.width}x${_preset.composition.height} @ ${_preset.exportSettings.frameRate}fps',
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                 ),
+              IconButton(
+                tooltip: 'Connected accounts',
+                icon: const Icon(Icons.account_circle_outlined),
+                onPressed: () => AccountsDialog.show(context),
               ),
             ],
-          ],
-        ),
-        actions: [
-          if (_workspaceMode == _WorkspaceMode.automatic)
-            Padding(
-              padding: const EdgeInsets.only(right: 16),
-              child: Center(
-                child: Text(
-                  '${_preset.composition.width}x${_preset.composition.height} @ ${_preset.exportSettings.frameRate}fps',
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            ),
-          IconButton(
-            tooltip: 'Connected accounts',
-            icon: const Icon(Icons.account_circle_outlined),
-            onPressed: () => AccountsDialog.show(context),
           ),
-        ],
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-              child: _ModeSwitcher(
-                selectedMode: _workspaceMode,
-                onChanged: (mode) {
-                  setState(() {
-                    _workspaceMode = mode;
-                  });
-                },
-              ),
-            ),
-            Expanded(
-              child: AnimatedSwitcher(
-                duration: const Duration(milliseconds: 280),
-                switchInCurve: Curves.easeOutCubic,
-                switchOutCurve: Curves.easeIn,
-                transitionBuilder: (child, animation) {
-                  return FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(0, 0.015),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: child,
+          body: SafeArea(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                  child: KeyedSubtree(
+                    key: _modeSwitcherTourKey,
+                    child: _ModeSwitcher(
+                      selectedMode: _workspaceMode,
+                      onChanged: (mode) {
+                        setState(() {
+                          _workspaceMode = mode;
+                        });
+                        if (_guidedTourActive &&
+                            _guidedTourStep == 5 &&
+                            mode == _WorkspaceMode.manual) {
+                          _setGuidedTourStep(6);
+                        }
+                      },
                     ),
-                  );
-                },
-                child: _workspaceMode == _WorkspaceMode.automatic
-                    ? _buildAutomaticWorkspace(desktopRendererAvailable)
-                    : ManualEditorScreen(
-                        key: const ValueKey('manual-editor'),
-                        desktopRendererAvailable: desktopRendererAvailable,
-                      ),
-              ),
+                  ),
+                ),
+                Expanded(
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 280),
+                    switchInCurve: Curves.easeOutCubic,
+                    switchOutCurve: Curves.easeIn,
+                    transitionBuilder: (child, animation) {
+                      return FadeTransition(
+                        opacity: animation,
+                        child: SlideTransition(
+                          position: Tween<Offset>(
+                            begin: const Offset(0, 0.015),
+                            end: Offset.zero,
+                          ).animate(animation),
+                          child: child,
+                        ),
+                      );
+                    },
+                    child: _workspaceMode == _WorkspaceMode.automatic
+                        ? _buildAutomaticWorkspace(desktopRendererAvailable)
+                        : ManualEditorScreen(
+                            key: const ValueKey('manual-editor'),
+                            desktopRendererAvailable: desktopRendererAvailable,
+                            addVideoTourKey: _manualAddVideoTourKey,
+                            addTextTourKey: _manualAddTextTourKey,
+                            textFieldTourKey: _manualTextFieldTourKey,
+                            exportTourKey: _manualExportTourKey,
+                            onGuidedVideoAdded: () {
+                              if (_guidedTourActive && _guidedTourStep == 6) {
+                                _setGuidedTourStep(7);
+                              }
+                            },
+                            onGuidedTextAdded: () {
+                              if (_guidedTourActive && _guidedTourStep == 7) {
+                                _guidedTextAdded = true;
+                                _setGuidedTourStep(8);
+                              }
+                            },
+                            onGuidedTextEdited: () {
+                              if (_guidedTourActive && _guidedTourStep == 8) {
+                                _setGuidedTourStep(9);
+                              }
+                            },
+                            onGuidedExportStarted: () {
+                              if (_guidedTourActive && _guidedTourStep == 9) {
+                                unawaited(_finishGuidedTour());
+                              }
+                            },
+                          ),
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        if (_guidedTourActive) _buildGuidedTour(),
+      ],
     );
   }
 
@@ -1169,6 +1396,11 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
           onPasteEdits: _pasteCopiedEdits,
           onRender: _render,
           onCancelRender: _cancelRender,
+          addVideosTourKey: _addVideosTourKey,
+          canvasTourKey: _canvasTourKey,
+          savePresetTourKey: _savePresetTourKey,
+          styleTourKey: _styleTourKey,
+          renderTourKey: _renderTourKey,
           status: _status,
           progress: _progress,
           desktopRendererAvailable: desktopRendererAvailable,
@@ -1329,6 +1561,11 @@ class _ControlsPanel extends StatelessWidget {
     required this.onPasteEdits,
     required this.onRender,
     required this.onCancelRender,
+    required this.addVideosTourKey,
+    required this.canvasTourKey,
+    required this.savePresetTourKey,
+    required this.styleTourKey,
+    required this.renderTourKey,
     required this.status,
     required this.progress,
     required this.desktopRendererAvailable,
@@ -1376,6 +1613,11 @@ class _ControlsPanel extends StatelessWidget {
   final VoidCallback onPasteEdits;
   final VoidCallback onRender;
   final VoidCallback onCancelRender;
+  final GlobalKey addVideosTourKey;
+  final GlobalKey canvasTourKey;
+  final GlobalKey savePresetTourKey;
+  final GlobalKey styleTourKey;
+  final GlobalKey renderTourKey;
   final String status;
   final double? progress;
   final bool desktopRendererAvailable;
@@ -1413,6 +1655,7 @@ class _ControlsPanel extends StatelessWidget {
             Align(
               alignment: Alignment.centerLeft,
               child: OutlinedButton.icon(
+                key: addVideosTourKey,
                 onPressed: canChooseSource ? onChooseSource : null,
                 icon: const Icon(Icons.upload_file_outlined),
                 label: const Text('Add Videos'),
@@ -1458,6 +1701,7 @@ class _ControlsPanel extends StatelessWidget {
             Text('Canvas', style: theme.textTheme.titleMedium),
             const SizedBox(height: 10),
             SegmentedButton<_OutputResolution>(
+              key: canvasTourKey,
               segments: [
                 for (final option in _OutputResolution.values)
                   ButtonSegment(
@@ -1558,6 +1802,7 @@ class _ControlsPanel extends StatelessWidget {
             Text('Look', style: theme.textTheme.titleMedium),
             const SizedBox(height: 10),
             Wrap(
+              key: savePresetTourKey,
               spacing: 8,
               runSpacing: 8,
               children: [
@@ -1602,6 +1847,7 @@ class _ControlsPanel extends StatelessWidget {
             ],
             const SizedBox(height: 10),
             Wrap(
+              key: styleTourKey,
               spacing: 8,
               runSpacing: 8,
               children: [
@@ -1701,6 +1947,7 @@ class _ControlsPanel extends StatelessWidget {
                 text: 'Desktop FFmpeg rendering is wired first.',
               ),
             FilledButton.icon(
+              key: renderTourKey,
               onPressed: isRendering
                   ? onCancelRender
                   : (canRender ? onRender : null),

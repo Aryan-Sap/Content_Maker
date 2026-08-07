@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -6,17 +8,46 @@ import 'package:content_maker/src/application/app_session_store.dart';
 import 'package:content_maker/src/presentation/render_home_screen.dart';
 
 void main() {
-  testWidgets('starts on the login screen', (WidgetTester tester) async {
-    await tester.pumpWidget(const ContentMakerApp());
-    await tester.pump();
+  testWidgets('starts the hands-on tour inside the real project flow', (
+    WidgetTester tester,
+  ) async {
+    final tempDirectory = await Directory.systemTemp.createTemp(
+      'content-maker-onboarding-test-',
+    );
+    addTearDown(() => tempDirectory.delete(recursive: true));
+    final store = AppSessionStore(
+      storePath: '${tempDirectory.path}${Platform.pathSeparator}session.json',
+    );
 
-    // The wordmark and prompt render above the async profile loader, so they
-    // are present whether or not the (disk-backed) profile load has resolved.
+    await tester.pumpWidget(ContentMakerApp(sessionStore: store));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+
     expect(find.text('CONTENT MAKER'), findsOneWidget);
     expect(
       find.text('Sign in with a local profile to continue.'),
       findsOneWidget,
     );
+
+    await tester.enterText(find.byType(TextField).last, 'Tour Creator');
+    await tester.tap(find.text('Enter Content Maker'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(find.text('Name a real project'), findsOneWidget);
+    expect(find.text('STEP 1 OF 13'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField).last, 'My guided edit');
+    await tester.pump();
+    await tester.tap(find.text('Project named — continue'));
+    await tester.pump();
+
+    expect(find.text('Choose Auto Render'), findsOneWidget);
+    await tester.tap(find.text('Skip tour'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 700));
+
+    expect(await store.hasCompletedTutorial(), isTrue);
   });
 
   testWidgets('shows renderer workspace', (WidgetTester tester) async {
@@ -45,6 +76,7 @@ void main() {
     expect(find.text('Timeline'), findsOneWidget);
     expect(find.text('Inspector'), findsOneWidget);
     expect(find.text('Export Timeline'), findsOneWidget);
+    expect(find.byTooltip('Add text'), findsOneWidget);
   });
 
   testWidgets('custom pipeline opens straight into the editor', (
@@ -59,5 +91,30 @@ void main() {
 
     expect(find.text('Timeline'), findsOneWidget);
     expect(find.text('Export Timeline'), findsOneWidget);
+  });
+
+  testWidgets('adds a text overlay with styling and timing controls', (
+    WidgetTester tester,
+  ) async {
+    tester.view.physicalSize = const Size(1440, 1000);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RenderHomeScreen(initialPipeline: ProjectPipeline.custom),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Add text'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Text inspector'), findsOneWidget);
+    expect(find.text('Font size'), findsOneWidget);
+    expect(find.text('Text colour'), findsOneWidget);
+    expect(find.text('Visible for'), findsOneWidget);
+    expect(find.text('Fade out'), findsOneWidget);
   });
 }

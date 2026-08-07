@@ -29,31 +29,103 @@ abstract final class Brand {
   static const radiusSmall = 8.0;
 }
 
-/// The "⚡ CONTENT MAKER" wordmark used on the app bar and onboarding.
-class BrandWordmark extends StatelessWidget {
-  const BrandWordmark({super.key, this.size = 18, this.showBolt = true});
+/// The circular Content Maker mark used across the desktop product.
+class BrandLogo extends StatelessWidget {
+  const BrandLogo({
+    super.key,
+    this.size = 42,
+    this.ringColor = Brand.lime,
+    this.letterColor = Brand.cream,
+  });
 
   final double size;
-  final bool showBolt;
+  final Color ringColor;
+  final Color letterColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      image: true,
+      label: 'Content Maker logo',
+      child: CustomPaint(
+        size: Size.square(size),
+        painter: _BrandLogoPainter(
+          ringColor: ringColor,
+          letterColor: letterColor,
+        ),
+      ),
+    );
+  }
+}
+
+class _BrandLogoPainter extends CustomPainter {
+  const _BrandLogoPainter({required this.ringColor, required this.letterColor});
+
+  final Color ringColor;
+  final Color letterColor;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final shortest = size.shortestSide;
+    final center = Offset(size.width / 2, size.height / 2);
+    final ring = Paint()
+      ..color = ringColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = shortest * 0.13
+      ..strokeCap = StrokeCap.round;
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: shortest * 0.38),
+      -2.55,
+      5.05,
+      false,
+      ring,
+    );
+
+    final letter = TextPainter(
+      text: TextSpan(
+        text: 'M',
+        style: TextStyle(
+          color: letterColor,
+          fontFamily: Brand.displayFont,
+          fontWeight: FontWeight.w800,
+          fontSize: shortest * 0.48,
+          height: 1,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+      textAlign: TextAlign.center,
+    )..layout();
+    letter.paint(
+      canvas,
+      Offset(
+        center.dx - letter.width / 2,
+        center.dy - letter.height / 2 + shortest * 0.035,
+      ),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _BrandLogoPainter oldDelegate) {
+    return oldDelegate.ringColor != ringColor ||
+        oldDelegate.letterColor != letterColor;
+  }
+}
+
+/// The Content Maker logo and wordmark used on app bars and onboarding.
+class BrandWordmark extends StatelessWidget {
+  const BrandWordmark({super.key, this.size = 18, this.showMark = true});
+
+  final double size;
+  final bool showMark;
 
   @override
   Widget build(BuildContext context) {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        if (showBolt) ...[
-          Container(
-            padding: EdgeInsets.all(size * 0.22),
-            decoration: BoxDecoration(
-              color: Brand.lime,
-              borderRadius: BorderRadius.circular(size * 0.3),
-            ),
-            child: Text(
-              '⚡',
-              style: TextStyle(fontSize: size * 0.8, height: 1),
-            ),
-          ),
-          SizedBox(width: size * 0.5),
+        if (showMark) ...[
+          BrandLogo(size: size * 1.75),
+          SizedBox(width: size * 0.55),
         ],
         Text(
           'CONTENT MAKER',

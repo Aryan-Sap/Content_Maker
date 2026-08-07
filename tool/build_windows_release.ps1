@@ -88,6 +88,11 @@ if (-not $SkipTests) {
 }
 
 Write-Step 'Building Windows release'
+# Never let an installer produced by an older build slip into the portable ZIP.
+# A fresh MSIX, when requested, is created separately after the ZIP is packaged.
+if (Test-Path -LiteralPath $MsixPath) {
+  Remove-Item -LiteralPath $MsixPath -Force
+}
 flutter build windows --release --dart-define-from-file=$ConfigPath
 
 if (-not (Test-Path -LiteralPath $ExePath)) {

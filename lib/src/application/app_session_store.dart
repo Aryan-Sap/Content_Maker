@@ -77,8 +77,7 @@ class ProjectSummary {
         orElse: () => ProjectPipeline.simple,
       ),
       ownerId: '${map['ownerId'] ?? ''}',
-      createdAt:
-          DateTime.tryParse('${map['createdAt']}') ?? DateTime.now(),
+      createdAt: DateTime.tryParse('${map['createdAt']}') ?? DateTime.now(),
       lastOpenedAt:
           DateTime.tryParse('${map['lastOpenedAt']}') ?? DateTime.now(),
     );
@@ -92,17 +91,25 @@ class AppSessionStore {
 
   final String? storePath;
 
+  /// Whether the first-run product walkthrough has been completed.
+  Future<bool> hasCompletedTutorial() async {
+    final decoded = await _readDocument();
+    return decoded['tutorialCompleted'] == true;
+  }
+
+  /// Marks the walkthrough complete without disturbing profiles or projects.
+  Future<void> markTutorialCompleted() async {
+    final file = _storeFile();
+    final decoded = await _readDocument();
+    decoded['schemaVersion'] = 2;
+    decoded['tutorialCompleted'] = true;
+    await _writeDocument(file, decoded);
+  }
+
   Future<({List<UserProfile> profiles, List<ProjectSummary> projects})>
   load() async {
-    final file = _storeFile();
-    if (!file.existsSync()) {
-      return (profiles: <UserProfile>[], projects: <ProjectSummary>[]);
-    }
     try {
-      final decoded = jsonDecode(await file.readAsString());
-      if (decoded is! Map) {
-        return (profiles: <UserProfile>[], projects: <ProjectSummary>[]);
-      }
+      final decoded = await _readDocument();
       final profiles = decoded['profiles'];
       final projects = decoded['projects'];
       return (
@@ -123,18 +130,38 @@ class AppSessionStore {
     required List<ProjectSummary> projects,
   }) async {
     final file = _storeFile();
+    final decoded = await _readDocument();
+    await _writeDocument(file, {
+      'schemaVersion': 2,
+      'tutorialCompleted': decoded['tutorialCompleted'] == true,
+      'profiles': [for (final profile in profiles) profile.toJson()],
+      'projects': [for (final project in projects) project.toJson()],
+    });
+  }
+
+  Future<Map<String, Object?>> _readDocument() async {
+    final file = _storeFile();
+    if (!file.existsSync()) {
+      return <String, Object?>{};
+    }
+    try {
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is Map) {
+        return decoded.map((key, value) => MapEntry('$key', value));
+      }
+    } on FormatException {
+      // A damaged session behaves like a fresh install and is replaced on save.
+    }
+    return <String, Object?>{};
+  }
+
+  Future<void> _writeDocument(File file, Map<String, Object?> document) async {
     final parent = file.parent;
     if (!parent.existsSync()) {
       await parent.create(recursive: true);
     }
     const encoder = JsonEncoder.withIndent('  ');
-    await file.writeAsString(
-      '${encoder.convert({
-        'schemaVersion': 1,
-        'profiles': [for (final profile in profiles) profile.toJson()],
-        'projects': [for (final project in projects) project.toJson()],
-      })}\n',
-    );
+    await file.writeAsString('${encoder.convert(document)}\n');
   }
 
   File _storeFile() {

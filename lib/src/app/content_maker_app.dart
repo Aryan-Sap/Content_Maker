@@ -1,10 +1,16 @@
 import 'package:flutter/material.dart';
 
-import '../presentation/onboarding/login_screen.dart';
+import '../application/app_session_store.dart';
+import '../presentation/onboarding/first_run_tutorial_screen.dart';
 import 'brand.dart';
 
 class ContentMakerApp extends StatelessWidget {
-  const ContentMakerApp({super.key});
+  const ContentMakerApp({
+    super.key,
+    this.sessionStore = const AppSessionStore(),
+  });
+
+  final AppSessionStore sessionStore;
 
   @override
   Widget build(BuildContext context) {
@@ -157,7 +163,10 @@ class ContentMakerApp extends StatelessWidget {
                   : Brand.muted,
             ),
             textStyle: const WidgetStatePropertyAll(
-              TextStyle(fontFamily: Brand.bodyFont, fontWeight: FontWeight.w600),
+              TextStyle(
+                fontFamily: Brand.bodyFont,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ),
@@ -223,9 +232,8 @@ class ContentMakerApp extends StatelessWidget {
         ),
         switchTheme: SwitchThemeData(
           thumbColor: WidgetStateProperty.resolveWith(
-            (states) => states.contains(WidgetState.selected)
-                ? Brand.ink
-                : Brand.muted,
+            (states) =>
+                states.contains(WidgetState.selected) ? Brand.ink : Brand.muted,
           ),
           trackColor: WidgetStateProperty.resolveWith(
             (states) => states.contains(WidgetState.selected)
@@ -252,7 +260,7 @@ class ContentMakerApp extends StatelessWidget {
           linearTrackColor: Brand.surfaceSunken,
         ),
       ),
-      home: const LoginScreen(),
+      home: AppEntryGate(store: sessionStore),
     );
   }
 }

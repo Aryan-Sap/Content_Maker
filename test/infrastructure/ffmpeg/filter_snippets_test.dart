@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:content_maker/src/domain/editing/timeline_clip.dart';
@@ -50,5 +52,34 @@ void main() {
       'afade=t=in:st=0:d=0.5',
       'afade=t=out:st=4:d=1',
     ]);
+  });
+
+  test('builds a timed text overlay with an editable fade-out', () {
+    const text = TextSpec(
+      content: "We're live: now",
+      font: 'Arial',
+      size: 72,
+      colorHex: 'C9F63C',
+      x: 120,
+      y: -240,
+      fadeOutSeconds: 0.75,
+    );
+
+    final filter = FilterSnippets.drawText(
+      text,
+      startSeconds: 2,
+      endSeconds: 6,
+    );
+
+    expect(filter, contains("text='We\\'re live\\: now'"));
+    expect(
+      filter,
+      contains(Platform.isWindows ? "fontfile='" : "font='Arial'"),
+    );
+    expect(filter, contains('fontsize=72:fontcolor=0xC9F63C'));
+    expect(filter, contains('x=(w-text_w)/2+120'));
+    expect(filter, contains('y=(h-text_h)/2+-240'));
+    expect(filter, contains("alpha='min(1\\,max(0\\,(6-t)/0.75))'"));
+    expect(filter, contains("enable='between(t,2,6)'"));
   });
 }

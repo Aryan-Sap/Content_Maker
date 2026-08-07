@@ -184,6 +184,23 @@ class FfmpegManualTimelineCommandBuilder {
       baseLabel = nextBaseLabel;
     }
 
+    final textClips = project.enabledTextClips..sort(_compareVisualStack);
+    for (var i = 0; i < textClips.length; i++) {
+      final clip = textClips[i];
+      final nextBaseLabel = 'basetext${i + 1}';
+      graph
+        ..write(';[$baseLabel]')
+        ..write(
+          FilterSnippets.drawText(
+            clip.text!,
+            startSeconds: clip.timelineStartSeconds,
+            endSeconds: clip.timelineEndSeconds,
+          ),
+        )
+        ..write('[$nextBaseLabel]');
+      baseLabel = nextBaseLabel;
+    }
+
     graph
       ..write(';')
       ..write('[$baseLabel]fps=${project.frameRate},format=yuv420p[v]');
@@ -200,7 +217,12 @@ class FfmpegManualTimelineCommandBuilder {
 
   List<TimelineClip> _activeClips(ManualRenderJob job) {
     return job.project.clips
-        .where((clip) => clip.enabled && clip.durationSeconds > 0)
+        .where(
+          (clip) =>
+              (clip.isVideo || clip.isAudio) &&
+              clip.enabled &&
+              clip.durationSeconds > 0,
+        )
         .toList();
   }
 
@@ -224,7 +246,8 @@ class FfmpegManualTimelineCommandBuilder {
   }
 
   bool _areAdjacent(TimelineClip outgoing, TimelineClip incoming) {
-    return (incoming.timelineStartSeconds - outgoing.timelineEndSeconds).abs() <=
+    return (incoming.timelineStartSeconds - outgoing.timelineEndSeconds)
+            .abs() <=
         0.08;
   }
 
@@ -377,8 +400,7 @@ class FfmpegManualTimelineCommandBuilder {
     String duration, {
     required double fromFactor,
   }) {
-    final factor =
-        '(1+${_number(fromFactor)}*max(0\\,1-(t-$start)/$duration))';
+    final factor = '(1+${_number(fromFactor)}*max(0\\,1-(t-$start)/$duration))';
     return ',scale=w=iw*$factor:h=ih*$factor:eval=frame';
   }
 
@@ -531,7 +553,8 @@ class FfmpegManualTimelineCommandBuilder {
       );
     if (videoClips.length < 2 ||
         project.blurredBackgroundEnabled ||
-        project.audibleAudioClips.isNotEmpty) {
+        project.audibleAudioClips.isNotEmpty ||
+        project.enabledTextClips.isNotEmpty) {
       return null;
     }
 

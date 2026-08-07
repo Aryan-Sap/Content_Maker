@@ -103,9 +103,28 @@ extension _EditorViewDetails on _EditorView {
 }
 
 class ManualEditorScreen extends StatefulWidget {
-  const ManualEditorScreen({required this.desktopRendererAvailable, super.key});
+  const ManualEditorScreen({
+    required this.desktopRendererAvailable,
+    super.key,
+    this.addVideoTourKey,
+    this.addTextTourKey,
+    this.textFieldTourKey,
+    this.exportTourKey,
+    this.onGuidedVideoAdded,
+    this.onGuidedTextAdded,
+    this.onGuidedTextEdited,
+    this.onGuidedExportStarted,
+  });
 
   final bool desktopRendererAvailable;
+  final GlobalKey? addVideoTourKey;
+  final GlobalKey? addTextTourKey;
+  final GlobalKey? textFieldTourKey;
+  final GlobalKey? exportTourKey;
+  final VoidCallback? onGuidedVideoAdded;
+  final VoidCallback? onGuidedTextAdded;
+  final VoidCallback? onGuidedTextEdited;
+  final VoidCallback? onGuidedExportStarted;
 
   @override
   State<ManualEditorScreen> createState() => _ManualEditorScreenState();
@@ -258,6 +277,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
       });
       unawaited(_probeMediaMetadata(clip));
       if (type == TimelineClipType.video) {
+        widget.onGuidedVideoAdded?.call();
         unawaited(_generateThumbnail(clip));
       }
     } on PlatformException catch (error) {
@@ -270,6 +290,38 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
         _progress = null;
       });
     }
+  }
+
+  void _addTextClip() {
+    if (_isRendering) {
+      return;
+    }
+    final clip = TimelineClip(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      type: TimelineClipType.text,
+      path: '',
+      name: 'Text overlay',
+      trackIndex: _defaultTrackIndex(TimelineClipType.text),
+      timelineStartSeconds: _playheadSeconds,
+      trimStartSeconds: 0,
+      trimEndSeconds: 5,
+      volume: 1,
+      enabled: true,
+      muted: false,
+      locked: false,
+      transition: TimelineTransition.cut,
+      transitionDurationSeconds: 0.35,
+      hasAudio: false,
+      text: const TextSpec(content: 'Your text'),
+    );
+    _recordHistory();
+    setState(() {
+      _clips.add(clip);
+      _selectedClipId = clip.id;
+      _status = 'Text overlay added.';
+      _progress = null;
+    });
+    widget.onGuidedTextAdded?.call();
   }
 
   Future<void> _generateThumbnail(TimelineClip clip) async {
@@ -414,6 +466,9 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
 
     final currentClip = _clips[index];
     final updatedClip = update(currentClip);
+    final textContentChanged =
+        currentClip.isText &&
+        updatedClip.text?.content != currentClip.text?.content;
     final onlyLockChanged =
         updatedClip.locked != currentClip.locked &&
         updatedClip == currentClip.copyWith(locked: updatedClip.locked);
@@ -432,6 +487,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
           .toDouble();
       _previewSeekVersion++;
     });
+    if (textContentChanged) widget.onGuidedTextEdited?.call();
   }
 
   TimelineClip _normalizeClip(TimelineClip clip) {
@@ -440,6 +496,17 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
         .clamp(0.0, math.max(0.0, sourceDuration - 0.1))
         .toDouble();
     final trimEnd = math.max(trimStart + 0.1, clip.trimEndSeconds);
+    final duration = (trimEnd - trimStart).clamp(0.1, sourceDuration);
+    final normalizedText = clip.text?.copyWith(
+      size: clip.text!.size.clamp(8.0, 360.0).toDouble(),
+      x: clip.text!.x
+          .clamp(-_canvasPreset.width / 2, _canvasPreset.width / 2)
+          .toDouble(),
+      y: clip.text!.y
+          .clamp(-_canvasPreset.height / 2, _canvasPreset.height / 2)
+          .toDouble(),
+      fadeOutSeconds: clip.text!.fadeOutSeconds.clamp(0.0, duration).toDouble(),
+    );
     return clip.copyWith(
       trackIndex: clip.trackIndex.clamp(0, 5).toInt(),
       timelineStartSeconds: clip.timelineStartSeconds.clamp(0.0, 3600.0),
@@ -475,17 +542,25 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
       transitionDurationSeconds: clip.transitionDurationSeconds
           .clamp(0.1, math.max(0.1, clip.durationSeconds / 2))
           .toDouble(),
+      text: normalizedText,
     );
   }
 
   void _moveClipOnCanvas(String clipId, Offset normalizedDelta) {
-    _updateClip(
-      clipId,
-      (clip) => clip.copyWith(
+    _updateClip(clipId, (clip) {
+      if (clip.isText && clip.text != null) {
+        return clip.copyWith(
+          text: clip.text!.copyWith(
+            x: clip.text!.x + normalizedDelta.dx * _canvasPreset.width / 2,
+            y: clip.text!.y + normalizedDelta.dy * _canvasPreset.height / 2,
+          ),
+        );
+      }
+      return clip.copyWith(
         x: clip.x + normalizedDelta.dx,
         y: clip.y + normalizedDelta.dy,
-      ),
-    );
+      );
+    });
   }
 
   void _moveClipOnTimeline(String clipId, double deltaSeconds) {
@@ -1319,6 +1394,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
       _progress = 0;
       _status = 'Timeline queued.';
     });
+    widget.onGuidedExportStarted?.call();
 
     _renderSubscription = _exportUseCase(job).listen(
       (progress) {
@@ -1503,6 +1579,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
             onSaveProject: _saveProject,
             onUndo: _undo,
             onRedo: _redo,
+            exportTourKey: widget.exportTourKey,
           );
 
           if (wide) {
@@ -1534,6 +1611,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
                             isPlaying: _isPreviewPlaying,
                             onAddVideo: () => _addClip(TimelineClipType.video),
                             onAddAudio: () => _addClip(TimelineClipType.audio),
+                            onAddText: _addTextClip,
                             onSelectClip: _selectClip,
                             onMoveClipOnCanvas: _moveClipOnCanvas,
                             onMoveClipOnTimeline: _moveClipOnTimeline,
@@ -1549,6 +1627,9 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
                             onDeleteClip: _deleteClip,
                             onDropMediaClip: _dropMediaClipOnTimeline,
                             onDropTransition: _dropTransitionOnTimeline,
+                            addVideoTourKey: widget.addVideoTourKey,
+                            addTextTourKey: widget.addTextTourKey,
+                            textFieldTourKey: widget.textFieldTourKey,
                           )
                         : _PreviewWorkspace(
                             canvasPreset: _canvasPreset,
@@ -1591,6 +1672,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
                       isPlaying: _isPreviewPlaying,
                       onAddVideo: () => _addClip(TimelineClipType.video),
                       onAddAudio: () => _addClip(TimelineClipType.audio),
+                      onAddText: _addTextClip,
                       onSelectClip: _selectClip,
                       onMoveClipOnCanvas: _moveClipOnCanvas,
                       onMoveClipOnTimeline: _moveClipOnTimeline,
@@ -1606,6 +1688,9 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
                       onDeleteClip: _deleteClip,
                       onDropMediaClip: _dropMediaClipOnTimeline,
                       onDropTransition: _dropTransitionOnTimeline,
+                      addVideoTourKey: widget.addVideoTourKey,
+                      addTextTourKey: widget.addTextTourKey,
+                      textFieldTourKey: widget.textFieldTourKey,
                       stacked: true,
                     ),
                   )
@@ -1654,6 +1739,7 @@ class _EditWorkspace extends StatefulWidget {
     required this.isPlaying,
     required this.onAddVideo,
     required this.onAddAudio,
+    required this.onAddText,
     required this.onSelectClip,
     required this.onMoveClipOnCanvas,
     required this.onMoveClipOnTimeline,
@@ -1667,6 +1753,9 @@ class _EditWorkspace extends StatefulWidget {
     required this.onDeleteClip,
     required this.onDropMediaClip,
     required this.onDropTransition,
+    this.addVideoTourKey,
+    this.addTextTourKey,
+    this.textFieldTourKey,
     this.stacked = false,
   });
 
@@ -1682,6 +1771,7 @@ class _EditWorkspace extends StatefulWidget {
   final bool isPlaying;
   final VoidCallback onAddVideo;
   final VoidCallback onAddAudio;
+  final VoidCallback onAddText;
   final ValueChanged<String> onSelectClip;
   final void Function(String clipId, Offset normalizedDelta) onMoveClipOnCanvas;
   final void Function(String clipId, double deltaSeconds) onMoveClipOnTimeline;
@@ -1708,6 +1798,9 @@ class _EditWorkspace extends StatefulWidget {
   })
   onDropTransition;
   final bool stacked;
+  final GlobalKey? addVideoTourKey;
+  final GlobalKey? addTextTourKey;
+  final GlobalKey? textFieldTourKey;
 
   @override
   State<_EditWorkspace> createState() => _EditWorkspaceState();
@@ -1761,19 +1854,30 @@ class _EditWorkspaceState extends State<_EditWorkspace> {
       canChooseMedia: widget.canChooseMedia,
       onAddVideo: widget.onAddVideo,
       onAddAudio: widget.onAddAudio,
+      onAddText: widget.onAddText,
       onSelectClip: widget.onSelectClip,
+      addVideoTourKey: widget.addVideoTourKey,
+      addTextTourKey: widget.addTextTourKey,
     );
-    final inspector = widget.selectedClip?.isVideo ?? false
-        ? _AdvancedVideoInspectorPanel(
-            clip: widget.selectedClip!,
-            timelineDuration: widget.timelineDuration,
-            onClipChanged: widget.onClipChanged,
-          )
-        : _InspectorPanel(
-            clip: widget.selectedClip,
-            timelineDuration: widget.timelineDuration,
-            onClipChanged: widget.onClipChanged,
-          );
+    final inspector = switch (widget.selectedClip) {
+      TimelineClip clip when clip.isVideo => _AdvancedVideoInspectorPanel(
+        clip: clip,
+        timelineDuration: widget.timelineDuration,
+        onClipChanged: widget.onClipChanged,
+      ),
+      TimelineClip clip when clip.isText => _TextInspectorPanel(
+        clip: clip,
+        canvasPreset: widget.canvasPreset,
+        timelineDuration: widget.timelineDuration,
+        onClipChanged: widget.onClipChanged,
+        contentFieldKey: widget.textFieldTourKey,
+      ),
+      _ => _InspectorPanel(
+        clip: widget.selectedClip,
+        timelineDuration: widget.timelineDuration,
+        onClipChanged: widget.onClipChanged,
+      ),
+    };
 
     if (widget.stacked) {
       return Column(
@@ -2066,6 +2170,7 @@ class _EditorToolbar extends StatelessWidget {
     required this.onSaveProject,
     required this.onUndo,
     required this.onRedo,
+    this.exportTourKey,
   });
 
   final _EditorView editorView;
@@ -2089,6 +2194,7 @@ class _EditorToolbar extends StatelessWidget {
   final VoidCallback onSaveProject;
   final VoidCallback onUndo;
   final VoidCallback onRedo;
+  final GlobalKey? exportTourKey;
 
   @override
   Widget build(BuildContext context) {
@@ -2136,6 +2242,7 @@ class _EditorToolbar extends StatelessWidget {
             ),
           );
           final exportButton = FilledButton.icon(
+            key: exportTourKey,
             onPressed: isRendering
                 ? onCancelExport
                 : (canExport ? onExport : null),
@@ -2254,7 +2361,10 @@ class _MediaBinPanel extends StatelessWidget {
     required this.canChooseMedia,
     required this.onAddVideo,
     required this.onAddAudio,
+    required this.onAddText,
     required this.onSelectClip,
+    this.addVideoTourKey,
+    this.addTextTourKey,
   });
 
   final List<TimelineClip> clips;
@@ -2262,12 +2372,18 @@ class _MediaBinPanel extends StatelessWidget {
   final bool canChooseMedia;
   final VoidCallback onAddVideo;
   final VoidCallback onAddAudio;
+  final VoidCallback onAddText;
   final ValueChanged<String> onSelectClip;
+  final GlobalKey? addVideoTourKey;
+  final GlobalKey? addTextTourKey;
 
   @override
   Widget build(BuildContext context) {
     final mediaByPath = <String, TimelineClip>{};
     for (final clip in clips) {
+      if (clip.isText) {
+        continue;
+      }
       mediaByPath.putIfAbsent(clip.path, () => clip);
     }
     final mediaClips = mediaByPath.values.toList();
@@ -2279,6 +2395,7 @@ class _MediaBinPanel extends StatelessWidget {
       title: 'Library',
       actions: [
         IconButton.filledTonal(
+          key: addVideoTourKey,
           onPressed: canChooseMedia ? onAddVideo : null,
           tooltip: 'Add video',
           icon: const Icon(Icons.video_file_outlined),
@@ -2287,6 +2404,12 @@ class _MediaBinPanel extends StatelessWidget {
           onPressed: canChooseMedia ? onAddAudio : null,
           tooltip: 'Add audio',
           icon: const Icon(Icons.audio_file_outlined),
+        ),
+        IconButton.filledTonal(
+          key: addTextTourKey,
+          onPressed: onAddText,
+          tooltip: 'Add text',
+          icon: const Icon(Icons.text_fields_outlined),
         ),
       ],
       child: DefaultTabController(
@@ -2542,6 +2665,24 @@ class _PreviewCanvasPanel extends StatelessWidget {
           });
     _prioritizeActiveTransition(visibleVideoClips, playheadSeconds);
     _prioritizeActiveTransition(previewVideoClips, playheadSeconds);
+    final visibleTextClips =
+        clips
+            .where(
+              (clip) =>
+                  clip.isText &&
+                  clip.enabled &&
+                  clip.text != null &&
+                  clip.text!.content.isNotEmpty &&
+                  clip.isActiveAt(playheadSeconds),
+            )
+            .toList()
+          ..sort((a, b) {
+            final trackComparison = a.trackIndex.compareTo(b.trackIndex);
+            if (trackComparison != 0) {
+              return trackComparison;
+            }
+            return a.timelineStartSeconds.compareTo(b.timelineStartSeconds);
+          });
 
     return _EditorPanel(
       title: 'Preview',
@@ -2560,20 +2701,19 @@ class _PreviewCanvasPanel extends StatelessWidget {
               decoration: const BoxDecoration(color: Color(0xFF0D0B07)),
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  if (visibleVideoClips.isEmpty) {
-                    return const Center(
-                      child: Icon(
-                        Icons.smart_display_outlined,
-                        color: Color(0xFF55503F),
-                        size: 58,
-                      ),
-                    );
-                  }
-
                   return Stack(
                     fit: StackFit.expand,
                     children: [
-                      if (blurredBackgroundEnabled)
+                      if (visibleVideoClips.isEmpty)
+                        const Center(
+                          child: Icon(
+                            Icons.smart_display_outlined,
+                            color: Color(0xFF55503F),
+                            size: 58,
+                          ),
+                        ),
+                      if (blurredBackgroundEnabled &&
+                          visibleVideoClips.isNotEmpty)
                         _BlurredPreviewBackground(
                           clip: visibleVideoClips.last,
                           playheadSeconds: playheadSeconds,
@@ -2594,6 +2734,24 @@ class _PreviewCanvasPanel extends StatelessWidget {
                           canvasSize: Size(
                             constraints.maxWidth,
                             constraints.maxHeight,
+                          ),
+                          onSelect: () => onSelectClip(clip.id),
+                          onMove: (delta) => onMoveClip(clip.id, delta),
+                        ),
+                      for (final clip in visibleTextClips)
+                        _PreviewTextLayer(
+                          key: ValueKey(clip.id),
+                          clip: clip,
+                          selected: clip.id == selectedClipId,
+                          allowEditing: allowEditing,
+                          playheadSeconds: playheadSeconds,
+                          canvasSize: Size(
+                            constraints.maxWidth,
+                            constraints.maxHeight,
+                          ),
+                          outputSize: Size(
+                            canvasPreset.width.toDouble(),
+                            canvasPreset.height.toDouble(),
                           ),
                           onSelect: () => onSelectClip(clip.id),
                           onMove: (delta) => onMoveClip(clip.id, delta),
@@ -2787,6 +2945,119 @@ class _PreviewVideoLayer extends StatelessWidget {
                         ),
                     ],
                   ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PreviewTextLayer extends StatelessWidget {
+  const _PreviewTextLayer({
+    super.key,
+    required this.clip,
+    required this.selected,
+    required this.allowEditing,
+    required this.playheadSeconds,
+    required this.canvasSize,
+    required this.outputSize,
+    required this.onSelect,
+    required this.onMove,
+  });
+
+  final TimelineClip clip;
+  final bool selected;
+  final bool allowEditing;
+  final double playheadSeconds;
+  final Size canvasSize;
+  final Size outputSize;
+  final VoidCallback onSelect;
+  final ValueChanged<Offset> onMove;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = clip.text!;
+    final previewScale = canvasSize.width / outputSize.width;
+    final fontSize = math.max(8.0, text.size * previewScale);
+    final remaining = clip.timelineEndSeconds - playheadSeconds;
+    final fadeOut = text.fadeOutSeconds.clamp(0.0, clip.durationSeconds);
+    final fadeOpacity = fadeOut > 0 && remaining < fadeOut
+        ? (remaining / fadeOut).clamp(0.0, 1.0).toDouble()
+        : 1.0;
+    final textAlign = switch (text.align) {
+      'left' => TextAlign.left,
+      'right' => TextAlign.right,
+      _ => TextAlign.center,
+    };
+    final fillStyle = TextStyle(
+      color: _colorFromHex(text.colorHex),
+      fontFamily: text.font,
+      fontSize: fontSize,
+      height: 1.1,
+      shadows: text.shadow
+          ? const [
+              Shadow(
+                color: Color(0xCC000000),
+                blurRadius: 6,
+                offset: Offset(2, 3),
+              ),
+            ]
+          : null,
+    );
+    final textLayers = <Widget>[
+      if (text.strokeWidth > 0)
+        Text(
+          text.content,
+          textAlign: textAlign,
+          style: fillStyle.copyWith(
+            foreground: Paint()
+              ..style = PaintingStyle.stroke
+              ..strokeWidth = text.strokeWidth * previewScale * 2
+              ..color = _colorFromHex(text.strokeColorHex),
+          ),
+        ),
+      Text(text.content, textAlign: textAlign, style: fillStyle),
+    ];
+
+    return Positioned.fill(
+      child: Opacity(
+        opacity: fadeOpacity,
+        child: Align(
+          alignment: Alignment.center,
+          child: Transform.translate(
+            offset: Offset(text.x * previewScale, text.y * previewScale),
+            child: MouseRegion(
+              cursor: selected && !clip.locked && allowEditing
+                  ? SystemMouseCursors.move
+                  : SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: onSelect,
+                onPanUpdate: selected && !clip.locked && allowEditing
+                    ? (details) {
+                        onMove(
+                          Offset(
+                            details.delta.dx / canvasSize.width * 2,
+                            details.delta.dy / canvasSize.height * 2,
+                          ),
+                        );
+                      }
+                    : null,
+                child: Container(
+                  constraints: BoxConstraints(maxWidth: canvasSize.width * 0.9),
+                  padding: text.box
+                      ? const EdgeInsets.symmetric(horizontal: 10, vertical: 6)
+                      : const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    color: text.box ? const Color(0x73000000) : null,
+                    border: selected
+                        ? Border.all(color: const Color(0xFFFFFFFF), width: 1.5)
+                        : null,
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Stack(children: textLayers),
                 ),
               ),
             ),
@@ -3398,6 +3669,14 @@ class _TimelinePanelState extends State<_TimelinePanel> {
 
   List<_TrackSpec> _buildTracks(List<TimelineClip> clips) {
     final tracks = <_TrackSpec>[];
+    final textTrackCount = math.max(
+      1,
+      clips
+              .where((clip) => clip.isText)
+              .map((clip) => clip.trackIndex)
+              .fold<int>(0, math.max) +
+          1,
+    );
     final videoTrackCount = math.max(
       1,
       clips
@@ -3415,6 +3694,9 @@ class _TimelinePanelState extends State<_TimelinePanel> {
           1,
     );
 
+    for (var i = textTrackCount - 1; i >= 0; i--) {
+      tracks.add(_TrackSpec(TimelineClipType.text, i));
+    }
     for (var i = videoTrackCount - 1; i >= 0; i--) {
       tracks.add(_TrackSpec(TimelineClipType.video, i));
     }
@@ -3432,7 +3714,12 @@ class _TrackSpec {
   final int index;
 
   String get label {
-    return type == TimelineClipType.video ? 'V${index + 1}' : 'A${index + 1}';
+    return switch (type) {
+      TimelineClipType.video => 'V${index + 1}',
+      TimelineClipType.audio => 'A${index + 1}',
+      TimelineClipType.text => 'T${index + 1}',
+      TimelineClipType.image => 'I${index + 1}',
+    };
   }
 }
 
@@ -3758,6 +4045,8 @@ class _TimelineClipBlock extends StatelessWidget {
   Widget build(BuildContext context) {
     final color = clip.isVideo
         ? const Color(0xFF3D53F5)
+        : clip.isText
+        ? const Color(0xFF9A5BCE)
         : const Color(0xFF466B52);
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
@@ -3803,6 +4092,8 @@ class _TimelineClipBlock extends StatelessWidget {
                         Icon(
                           clip.isVideo
                               ? Icons.movie_creation_outlined
+                              : clip.isText
+                              ? Icons.text_fields_outlined
                               : Icons.graphic_eq_outlined,
                           size: 16,
                         ),
@@ -4704,6 +4995,417 @@ class _InspectorTabNavigator extends StatelessWidget {
   }
 }
 
+class _TextInspectorPanel extends StatelessWidget {
+  const _TextInspectorPanel({
+    required this.clip,
+    required this.canvasPreset,
+    required this.timelineDuration,
+    required this.onClipChanged,
+    this.contentFieldKey,
+  });
+
+  static const _fonts = <String>[
+    'Arial',
+    'Calibri',
+    'Verdana',
+    'Georgia',
+    'Times New Roman',
+    'Courier New',
+    'Impact',
+  ];
+
+  final TimelineClip clip;
+  final _ManualCanvasPreset canvasPreset;
+  final double timelineDuration;
+  final ValueChanged<TimelineClip> onClipChanged;
+  final GlobalKey? contentFieldKey;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = clip.text ?? const TextSpec();
+    final fonts = _fonts.contains(text.font) ? _fonts : [text.font, ..._fonts];
+    final duration = clip.durationSeconds;
+    return _EditorPanel(
+      title: 'Text inspector',
+      child: Scrollbar(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.only(right: 34, bottom: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Row(
+                children: [
+                  Icon(Icons.text_fields_outlined, color: Color(0xFFB982E3)),
+                  SizedBox(width: 10),
+                  Text(
+                    'Text overlay',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                key: contentFieldKey ?? ValueKey('${clip.id}-content'),
+                initialValue: text.content,
+                enabled: !clip.locked,
+                minLines: 2,
+                maxLines: 4,
+                decoration: const InputDecoration(
+                  labelText: 'Text',
+                  hintText: 'Type the text shown on the video',
+                  prefixIcon: Icon(Icons.title_outlined),
+                ),
+                onChanged: (value) {
+                  onClipChanged(
+                    clip.copyWith(text: text.copyWith(content: value)),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+              DropdownButtonFormField<String>(
+                initialValue: text.font,
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: 'Font',
+                  prefixIcon: Icon(Icons.font_download_outlined),
+                ),
+                items: [
+                  for (final font in fonts)
+                    DropdownMenuItem(
+                      value: font,
+                      child: Text(font, overflow: TextOverflow.ellipsis),
+                    ),
+                ],
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        if (value != null) {
+                          onClipChanged(
+                            clip.copyWith(text: text.copyWith(font: value)),
+                          );
+                        }
+                      },
+              ),
+              const SizedBox(height: 8),
+              _ValueControl(
+                icon: Icons.format_size_outlined,
+                label: 'Font size',
+                value: text.size,
+                min: 8,
+                max: 360,
+                divisions: 176,
+                displayValue: '${text.size.round()} px',
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        onClipChanged(
+                          clip.copyWith(text: text.copyWith(size: value)),
+                        );
+                      },
+              ),
+              _TextColorControl(
+                colorHex: text.colorHex,
+                enabled: !clip.locked,
+                onChanged: (value) {
+                  onClipChanged(
+                    clip.copyWith(text: text.copyWith(colorHex: value)),
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(
+                    value: 'left',
+                    icon: Icon(Icons.format_align_left_outlined),
+                  ),
+                  ButtonSegment(
+                    value: 'center',
+                    icon: Icon(Icons.format_align_center_outlined),
+                  ),
+                  ButtonSegment(
+                    value: 'right',
+                    icon: Icon(Icons.format_align_right_outlined),
+                  ),
+                ],
+                selected: {text.align},
+                onSelectionChanged: clip.locked
+                    ? null
+                    : (selection) {
+                        onClipChanged(
+                          clip.copyWith(
+                            text: text.copyWith(align: selection.first),
+                          ),
+                        );
+                      },
+              ),
+              const SizedBox(height: 8),
+              _ValueControl(
+                icon: Icons.swap_horiz_outlined,
+                label: 'Horizontal position',
+                value: text.x,
+                min: -canvasPreset.width / 2,
+                max: canvasPreset.width / 2,
+                divisions: 200,
+                displayValue: '${text.x.round()} px',
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        onClipChanged(
+                          clip.copyWith(text: text.copyWith(x: value)),
+                        );
+                      },
+              ),
+              _ValueControl(
+                icon: Icons.swap_vert_outlined,
+                label: 'Vertical position',
+                value: text.y,
+                min: -canvasPreset.height / 2,
+                max: canvasPreset.height / 2,
+                divisions: 200,
+                displayValue: '${text.y.round()} px',
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        onClipChanged(
+                          clip.copyWith(text: text.copyWith(y: value)),
+                        );
+                      },
+              ),
+              const Divider(height: 24),
+              _ValueControl(
+                icon: Icons.start_outlined,
+                label: 'Appears at',
+                value: clip.timelineStartSeconds,
+                min: 0,
+                max: math.max(timelineDuration, clip.timelineStartSeconds + 1),
+                divisions: 200,
+                displayValue: _seconds(clip.timelineStartSeconds),
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        onClipChanged(
+                          clip.copyWith(timelineStartSeconds: value),
+                        );
+                      },
+              ),
+              _ValueControl(
+                icon: Icons.timelapse_outlined,
+                label: 'Visible for',
+                value: duration,
+                min: 0.1,
+                max: math.max(10, math.max(timelineDuration, duration)),
+                divisions: math.max(
+                  1,
+                  (math.max(10, math.max(timelineDuration, duration)) * 10)
+                      .round(),
+                ),
+                displayValue: _seconds(duration),
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        onClipChanged(
+                          clip.copyWith(
+                            trimEndSeconds: clip.trimStartSeconds + value,
+                          ),
+                        );
+                      },
+              ),
+              _ValueControl(
+                icon: Icons.gradient_outlined,
+                label: 'Fade out',
+                value: text.fadeOutSeconds,
+                min: 0,
+                max: duration,
+                divisions: math.max(1, (duration * 10).round()),
+                displayValue: _seconds(text.fadeOutSeconds),
+                onChanged: clip.locked
+                    ? null
+                    : (value) {
+                        onClipChanged(
+                          clip.copyWith(
+                            text: text.copyWith(fadeOutSeconds: value),
+                          ),
+                        );
+                      },
+              ),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  FilterChip(
+                    selected: text.shadow,
+                    onSelected: clip.locked
+                        ? null
+                        : (value) {
+                            onClipChanged(
+                              clip.copyWith(text: text.copyWith(shadow: value)),
+                            );
+                          },
+                    label: const Text('Shadow'),
+                    avatar: const Icon(Icons.brightness_3_outlined, size: 18),
+                  ),
+                  FilterChip(
+                    selected: text.box,
+                    onSelected: clip.locked
+                        ? null
+                        : (value) {
+                            onClipChanged(
+                              clip.copyWith(text: text.copyWith(box: value)),
+                            );
+                          },
+                    label: const Text('Background'),
+                    avatar: const Icon(Icons.rectangle_outlined, size: 18),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SegmentedButton<int>(
+                segments: [
+                  for (var i = 0; i < 3; i++)
+                    ButtonSegment(value: i, label: Text('T${i + 1}')),
+                ],
+                selected: {clip.trackIndex.clamp(0, 2).toInt()},
+                onSelectionChanged: clip.locked
+                    ? null
+                    : (selection) {
+                        onClipChanged(
+                          clip.copyWith(trackIndex: selection.first),
+                        );
+                      },
+              ),
+              Material(
+                color: Colors.transparent,
+                child: SwitchListTile(
+                  value: clip.enabled,
+                  onChanged: clip.locked
+                      ? null
+                      : (value) {
+                          onClipChanged(clip.copyWith(enabled: value));
+                        },
+                  title: const Text('Visible'),
+                  secondary: const Icon(Icons.visibility_outlined),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+              Material(
+                color: Colors.transparent,
+                child: SwitchListTile(
+                  value: clip.locked,
+                  onChanged: (value) {
+                    onClipChanged(clip.copyWith(locked: value));
+                  },
+                  title: const Text('Locked'),
+                  secondary: const Icon(Icons.lock_outline),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TextColorControl extends StatelessWidget {
+  const _TextColorControl({
+    required this.colorHex,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  static const _presets = <String>[
+    'FFFFFF',
+    '101418',
+    'C9F63C',
+    'FFD54F',
+    'FF5A67',
+    '7D8DFA',
+    '5CE1E6',
+    'B982E3',
+  ];
+
+  final String colorHex;
+  final bool enabled;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const Icon(
+              Icons.format_color_text_outlined,
+              size: 19,
+              color: Color(0xFFCEC9BD),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(child: Text('Text colour')),
+            Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: _colorFromHex(colorHex),
+                shape: BoxShape.circle,
+                border: Border.all(color: const Color(0x66FFFFFF)),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final preset in _presets)
+              Tooltip(
+                message: '#$preset',
+                child: InkWell(
+                  onTap: enabled ? () => onChanged(preset) : null,
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    width: 28,
+                    height: 28,
+                    decoration: BoxDecoration(
+                      color: _colorFromHex(preset),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: colorHex.toUpperCase() == preset
+                            ? const Color(0xFFFFFFFF)
+                            : const Color(0x55FFFFFF),
+                        width: colorHex.toUpperCase() == preset ? 3 : 1,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        TextFormField(
+          key: ValueKey('text-color-$colorHex'),
+          initialValue: '#${colorHex.toUpperCase()}',
+          enabled: enabled,
+          maxLength: 7,
+          decoration: const InputDecoration(
+            labelText: 'Hex colour',
+            counterText: '',
+          ),
+          onChanged: (value) {
+            final normalized = value.replaceAll('#', '').trim().toUpperCase();
+            if (RegExp(r'^[0-9A-F]{6}$').hasMatch(normalized)) {
+              onChanged(normalized);
+            }
+          },
+        ),
+      ],
+    );
+  }
+}
+
 class _InspectorPanel extends StatelessWidget {
   const _InspectorPanel({
     required this.clip,
@@ -5361,4 +6063,10 @@ IconData _transitionIconData(TimelineTransition transition) {
 String _ffmpegNumber(num value) {
   final text = value.toStringAsFixed(3);
   return text.replaceFirst(RegExp(r'\.?0+$'), '');
+}
+
+Color _colorFromHex(String value) {
+  final normalized = value.replaceAll('#', '').trim();
+  final rgb = int.tryParse(normalized, radix: 16) ?? 0xFFFFFF;
+  return Color(0xFF000000 | (rgb & 0xFFFFFF));
 }

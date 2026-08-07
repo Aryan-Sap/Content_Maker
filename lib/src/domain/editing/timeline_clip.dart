@@ -615,6 +615,7 @@ class TextSpec {
     this.y = 0,
     this.animIn = TextAnimationType.none,
     this.animOut = TextAnimationType.none,
+    this.fadeOutSeconds = 0.5,
   });
 
   final String content;
@@ -630,6 +631,7 @@ class TextSpec {
   final double y;
   final TextAnimationType animIn;
   final TextAnimationType animOut;
+  final double fadeOutSeconds;
 
   TextSpec copyWith({
     String? content,
@@ -645,6 +647,7 @@ class TextSpec {
     double? y,
     TextAnimationType? animIn,
     TextAnimationType? animOut,
+    double? fadeOutSeconds,
   }) {
     return TextSpec(
       content: content ?? this.content,
@@ -660,6 +663,7 @@ class TextSpec {
       y: y ?? this.y,
       animIn: animIn ?? this.animIn,
       animOut: animOut ?? this.animOut,
+      fadeOutSeconds: fadeOutSeconds ?? this.fadeOutSeconds,
     );
   }
 
@@ -678,6 +682,7 @@ class TextSpec {
       'y': y,
       'animIn': animIn.name,
       'animOut': animOut.name,
+      'fadeOutSeconds': fadeOutSeconds,
     };
   }
 
@@ -705,6 +710,7 @@ class TextSpec {
         _readString(map, 'animOut'),
         TextAnimationType.none,
       ),
+      fadeOutSeconds: _readDouble(map, 'fadeOutSeconds', 0.5),
     );
   }
 
@@ -723,7 +729,8 @@ class TextSpec {
         other.x == x &&
         other.y == y &&
         other.animIn == animIn &&
-        other.animOut == animOut;
+        other.animOut == animOut &&
+        other.fadeOutSeconds == fadeOutSeconds;
   }
 
   @override
@@ -741,6 +748,7 @@ class TextSpec {
     y,
     animIn,
     animOut,
+    fadeOutSeconds,
   );
 }
 

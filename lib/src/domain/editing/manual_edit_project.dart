@@ -60,6 +60,18 @@ class ManualEditProject {
         .toList();
   }
 
+  List<TimelineClip> get enabledTextClips {
+    return clips
+        .where(
+          (clip) =>
+              clip.isText &&
+              clip.enabled &&
+              clip.durationSeconds > 0 &&
+              (clip.text?.content.trim().isNotEmpty ?? false),
+        )
+        .toList();
+  }
+
   List<TimelineClip> get audibleAudioClips {
     return clips
         .where(

@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:content_maker/src/domain/editing/manual_edit_project.dart';
@@ -84,6 +86,67 @@ void main() {
     expect(args, contains('-an'));
     expect(args, isNot(contains('[a]')));
     expect(filter, contains('fps=30,format=yuv420p[v]'));
+  });
+
+  test('renders text clips without treating them as media inputs', () {
+    final project = ManualEditProject(
+      outputPath: 'timeline.mp4',
+      width: 1080,
+      height: 1920,
+      frameRate: 60,
+      backgroundHexColor: '101418',
+      blurredBackgroundEnabled: false,
+      clips: [
+        TimelineClip.fromPath(
+          id: 'video-a',
+          type: TimelineClipType.video,
+          path: 'a.mp4',
+          timelineStartSeconds: 0,
+          durationSeconds: 8,
+        ),
+        TimelineClip(
+          id: 'text-a',
+          type: TimelineClipType.text,
+          path: '',
+          name: 'Text overlay',
+          trackIndex: 0,
+          timelineStartSeconds: 1.5,
+          trimStartSeconds: 0,
+          trimEndSeconds: 4,
+          volume: 1,
+          enabled: true,
+          muted: false,
+          locked: false,
+          transition: TimelineTransition.cut,
+          transitionDurationSeconds: 0.35,
+          hasAudio: false,
+          text: const TextSpec(
+            content: 'Subscribe',
+            font: 'Impact',
+            size: 96,
+            colorHex: 'FF5A67',
+            x: 40,
+            y: -300,
+            fadeOutSeconds: 1,
+          ),
+        ),
+      ],
+    );
+
+    final args = const FfmpegManualTimelineCommandBuilder().build(
+      ManualRenderJob(project: project),
+    );
+    final filter = args[args.indexOf('-filter_complex') + 1];
+
+    expect(args.where((argument) => argument == '-i'), hasLength(1));
+    expect(args, isNot(contains('')));
+    expect(filter, contains("drawtext=text='Subscribe'"));
+    expect(
+      filter,
+      contains(Platform.isWindows ? 'impact.ttf' : "font='Impact'"),
+    );
+    expect(filter, contains("enable='between(t,1.5,5.5)'"));
+    expect(filter, contains("alpha='min(1\\,max(0\\,(5.5-t)/1))'"));
   });
 
   test('applies grading, motion processing, and adjacent transitions', () {
@@ -236,46 +299,48 @@ void main() {
     expect(filter, contains("enable='between(t,0,4.5)'"));
   });
 
-  test('fade-through-black fades the outgoing clip out and the incoming in', () {
-    final project = ManualEditProject(
-      outputPath: 'timeline.mp4',
-      width: 1920,
-      height: 1080,
-      frameRate: 60,
-      backgroundHexColor: '080808',
-      blurredBackgroundEnabled: false,
-      clips: [
-        TimelineClip.fromPath(
-          id: 'outgoing',
-          type: TimelineClipType.video,
-          path: 'outgoing.mp4',
-          timelineStartSeconds: 0,
-          durationSeconds: 4,
-        ).copyWith(x: 0.1),
-        TimelineClip.fromPath(
-          id: 'incoming',
-          type: TimelineClipType.video,
-          path: 'incoming.mp4',
-          timelineStartSeconds: 4,
-          durationSeconds: 5,
-        ).copyWith(
-          transition: TimelineTransition.fadeThroughBlack,
-          transitionDurationSeconds: 1,
-          x: 0.1,
-        ),
-      ],
-    );
+  test(
+    'fade-through-black fades the outgoing clip out and the incoming in',
+    () {
+      final project = ManualEditProject(
+        outputPath: 'timeline.mp4',
+        width: 1920,
+        height: 1080,
+        frameRate: 60,
+        backgroundHexColor: '080808',
+        blurredBackgroundEnabled: false,
+        clips: [
+          TimelineClip.fromPath(
+            id: 'outgoing',
+            type: TimelineClipType.video,
+            path: 'outgoing.mp4',
+            timelineStartSeconds: 0,
+            durationSeconds: 4,
+          ).copyWith(x: 0.1),
+          TimelineClip.fromPath(
+            id: 'incoming',
+            type: TimelineClipType.video,
+            path: 'incoming.mp4',
+            timelineStartSeconds: 4,
+            durationSeconds: 5,
+          ).copyWith(
+            transition: TimelineTransition.fadeThroughBlack,
+            transitionDurationSeconds: 1,
+            x: 0.1,
+          ),
+        ],
+      );
 
-    final filter = const FfmpegManualTimelineCommandBuilder().buildFilterGraph(
-      ManualRenderJob(project: project),
-    );
+      final filter = const FfmpegManualTimelineCommandBuilder()
+          .buildFilterGraph(ManualRenderJob(project: project));
 
-    expect(filter, contains('fade=t=out:st=3.5:d=0.5'));
-    expect(filter, contains('fade=t=in:st=4:d=0.5'));
-    // No overlap for fade-through-black: the outgoing clip ends at the cut.
-    expect(filter, isNot(contains('tpad=')));
-    expect(filter, contains("enable='between(t,0,4)'"));
-  });
+      expect(filter, contains('fade=t=out:st=3.5:d=0.5'));
+      expect(filter, contains('fade=t=in:st=4:d=0.5'));
+      // No overlap for fade-through-black: the outgoing clip ends at the cut.
+      expect(filter, isNot(contains('tpad=')));
+      expect(filter, contains("enable='between(t,0,4)'"));
+    },
+  );
 
   test('zoom transitions animate scale and dissolve in', () {
     final project = ManualEditProject(

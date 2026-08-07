@@ -44,6 +44,32 @@ void main() {
           timelineStartSeconds: 1,
           durationSeconds: 12,
         ).copyWith(audioFadeInSeconds: 0.4, audioFadeOutSeconds: 1.2),
+        TimelineClip(
+          id: 'text-a',
+          type: TimelineClipType.text,
+          path: '',
+          name: 'Text overlay',
+          trackIndex: 0,
+          timelineStartSeconds: 2,
+          trimStartSeconds: 0,
+          trimEndSeconds: 5,
+          volume: 1,
+          enabled: true,
+          muted: false,
+          locked: false,
+          transition: TimelineTransition.cut,
+          transitionDurationSeconds: 0.35,
+          hasAudio: false,
+          text: const TextSpec(
+            content: 'Round trip',
+            font: 'Verdana',
+            size: 84,
+            colorHex: 'C9F63C',
+            x: 120,
+            y: -220,
+            fadeOutSeconds: 0.8,
+          ),
+        ),
       ],
     );
 
@@ -53,7 +79,8 @@ void main() {
     expect(restored.clips.first.colorGrade.lutId, 'cinematic');
     expect(restored.clips.first.motion.speed, 0.5);
     expect(restored.clips.first.animation.type, ClipAnimationType.kenBurnsIn);
-    expect(restored.clips.last.audio.fadeOutSeconds, 1.2);
+    expect(restored.clips[1].audio.fadeOutSeconds, 1.2);
+    expect(restored.clips.last.text?.fadeOutSeconds, 0.8);
   });
 
   test('project store saves and opens cmproj json', () async {

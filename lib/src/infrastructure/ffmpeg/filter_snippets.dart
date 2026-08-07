@@ -1,8 +1,20 @@
+import 'dart:io';
+
 import '../../domain/editing/timeline_clip.dart';
 import '../../domain/rendering/export_settings.dart';
 
 class FilterSnippets {
   const FilterSnippets._();
+
+  static const _windowsFontFiles = <String, String>{
+    'Arial': 'arial.ttf',
+    'Calibri': 'calibri.ttf',
+    'Verdana': 'verdana.ttf',
+    'Georgia': 'georgia.ttf',
+    'Times New Roman': 'times.ttf',
+    'Courier New': 'cour.ttf',
+    'Impact': 'impact.ttf',
+  };
 
   static String grade(ColorGrade grade) {
     return 'eq=brightness=${_number(grade.brightness)}:'
@@ -101,22 +113,51 @@ class FilterSnippets {
         '${_number(chroma.similarity)}:${_number(chroma.blend)}';
   }
 
-  static String drawText(TextSpec text) {
+  static String drawText(
+    TextSpec text, {
+    double? startSeconds,
+    double? endSeconds,
+  }) {
     final escapedText = text.content
         .replaceAll('\\', '\\\\')
         .replaceAll(':', '\\:')
         .replaceAll("'", "\\'");
+    final escapedFont = text.font
+        .replaceAll('\\', '\\\\')
+        .replaceAll(':', '\\:')
+        .replaceAll("'", "\\'");
+    final fontSelector = Platform.isWindows
+        ? "fontfile='${_escapePath('${Platform.environment['WINDIR'] ?? r'C:\Windows'}\\Fonts\\${_windowsFontFiles[text.font] ?? 'arial.ttf'}')}'"
+        : "font='$escapedFont'";
     final shadow = text.shadow ? ':shadowcolor=black:shadowx=2:shadowy=2' : '';
     final box = text.box ? ':box=1:boxcolor=black@0.45:boxborderw=18' : '';
     final stroke = text.strokeWidth > 0
         ? ':borderw=${_number(text.strokeWidth)}:'
               'bordercolor=0x${text.strokeColorHex}'
         : '';
-    return "drawtext=text='$escapedText':font='${text.font}':"
+    final alignment = switch (text.align) {
+      'left' => 'L',
+      'right' => 'R',
+      _ => 'C',
+    };
+    var timing = '';
+    if (startSeconds != null && endSeconds != null) {
+      final duration = (endSeconds - startSeconds).clamp(0.0, double.infinity);
+      final fadeOut = text.fadeOutSeconds.clamp(0.0, duration).toDouble();
+      final alpha = fadeOut <= 0.001
+          ? ''
+          : ":alpha='min(1\\,max(0\\,(${_number(endSeconds)}-t)/"
+                "${_number(fadeOut)}))'";
+      timing =
+          "$alpha:enable='between(t,${_number(startSeconds)},"
+          "${_number(endSeconds)})'";
+    }
+    return "drawtext=text='$escapedText':expansion=none:$fontSelector:"
         'fontsize=${_number(text.size)}:fontcolor=0x${text.colorHex}:'
+        'text_align=$alignment:'
         'x=(w-text_w)/2+${_number(text.x)}:'
         'y=(h-text_h)/2+${_number(text.y)}'
-        '$stroke$shadow$box';
+        '$stroke$shadow$box$timing';
   }
 
   static String blend(ClipBlendMode blendMode) {
