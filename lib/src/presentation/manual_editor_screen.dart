@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 
+import '../app/brand.dart';
 import '../application/create_manual_timeline_export.dart';
 import '../application/project_store.dart';
 import '../domain/editing/manual_edit_project.dart';
@@ -18,6 +19,8 @@ import '../infrastructure/ffmpeg/ffmpeg_executables.dart';
 import '../infrastructure/ffmpeg/ffmpeg_media_probe.dart';
 import '../infrastructure/ffmpeg/ffmpeg_manual_timeline_processor.dart';
 import '../infrastructure/ffmpeg/filter_snippets.dart';
+import '../infrastructure/files/media_picker.dart';
+import '../infrastructure/files/app_paths.dart';
 import '../infrastructure/notifications/desktop_notifier.dart';
 import 'publishing/publish_panel.dart';
 import 'widgets/frame_stream_player.dart';
@@ -105,6 +108,9 @@ extension _EditorViewDetails on _EditorView {
 class ManualEditorScreen extends StatefulWidget {
   const ManualEditorScreen({
     required this.desktopRendererAvailable,
+    this.active = true,
+    this.initialProjectPath,
+    this.onProjectSaved,
     super.key,
     this.addVideoTourKey,
     this.addTextTourKey,
@@ -117,6 +123,9 @@ class ManualEditorScreen extends StatefulWidget {
   });
 
   final bool desktopRendererAvailable;
+  final bool active;
+  final String? initialProjectPath;
+  final Future<void> Function(String)? onProjectSaved;
   final GlobalKey? addVideoTourKey;
   final GlobalKey? addTextTourKey;
   final GlobalKey? textFieldTourKey;
@@ -131,8 +140,6 @@ class ManualEditorScreen extends StatefulWidget {
 }
 
 class _ManualEditorScreenState extends State<ManualEditorScreen> {
-  static const _filePickerChannel = MethodChannel('content_maker/file_picker');
-
   final _outputController = TextEditingController();
   final _playbackFocusNode = FocusNode();
   final _mediaProbe = const FfmpegMediaProbe();
@@ -159,6 +166,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
   bool _isRendering = false;
   bool _isPreviewPlaying = false;
   bool _blurredBackgroundEnabled = true;
+  String? _mobileProjectPath;
 
   bool get _canUndo => _undoStack.isNotEmpty && !_isRendering;
 
@@ -190,7 +198,9 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
     return end;
   }
 
-  bool get _canChooseMedia => Platform.isWindows && !_isRendering;
+  bool get _canChooseMedia =>
+      (Platform.isWindows || Platform.isAndroid || Platform.isIOS) &&
+      !_isRendering;
 
   bool get _canExport {
     return !_isRendering &&
@@ -208,6 +218,29 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
     _playbackFocusNode.dispose();
     _outputController.dispose();
     super.dispose();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    final path = widget.initialProjectPath;
+    if (path != null) unawaited(_openLinkedProject(path));
+  }
+
+  Future<void> _openLinkedProject(String path) async {
+    try {
+      final project = await _projectStore.open(path);
+      if (mounted) {
+        setState(() => _restoreProject(project, 'Saved timeline restored.'));
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(
+          () => _status =
+              'Saved timeline could not be opened. Use Open project to locate the file.',
+        );
+      }
+    }
   }
 
   String _cleanPath(String value) {
@@ -240,9 +273,9 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
     }
 
     try {
-      final selectedPath = await _filePickerChannel.invokeMethod<String>(
-        type == TimelineClipType.video ? 'pickVideo' : 'pickAudio',
-      );
+      final selectedPath = type == TimelineClipType.video
+          ? (await MediaPicker.videos(multiple: false)).firstOrNull
+          : await MediaPicker.audio();
       if (!mounted || selectedPath == null || selectedPath.trim().isEmpty) {
         return;
       }
@@ -1321,17 +1354,34 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
   }
 
   Future<void> _saveProject() async {
-    if (!Platform.isWindows || _isRendering) {
+    if (_isRendering) {
       return;
     }
     try {
-      final selectedPath = await _filePickerChannel.invokeMethod<String>(
-        'saveProject',
-      );
+      final selectedPath = Platform.isWindows
+          ? await MediaPicker.project(save: true)
+          : widget.initialProjectPath ??
+                _mobileProjectPath ??
+                await AppPaths.newProjectFile();
       if (!mounted || selectedPath == null || selectedPath.trim().isEmpty) {
         return;
       }
       await _projectStore.save(_buildProject(), _cleanPath(selectedPath));
+      final path = _cleanPath(selectedPath);
+      if (!Platform.isWindows) _mobileProjectPath = path;
+      try {
+        await widget.onProjectSaved?.call(
+          path.toLowerCase().endsWith('.cmproj') ? path : '$path.cmproj',
+        );
+      } catch (_) {
+        if (mounted) {
+          setState(
+            () => _status =
+                'Timeline file saved, but the library link could not be updated. Open the saved file manually.',
+          );
+        }
+        return;
+      }
       if (!mounted) {
         return;
       }
@@ -1351,13 +1401,11 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
   }
 
   Future<void> _openProject() async {
-    if (!Platform.isWindows || _isRendering) {
+    if (_isRendering) {
       return;
     }
     try {
-      final selectedPath = await _filePickerChannel.invokeMethod<String>(
-        'pickProject',
-      );
+      final selectedPath = await MediaPicker.project();
       if (!mounted || selectedPath == null || selectedPath.trim().isEmpty) {
         return;
       }
@@ -1478,7 +1526,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      backgroundColor: const Color(0xFF120F0A),
+      backgroundColor: Brand.surface,
       builder: (context) {
         return DraggableScrollableSheet(
           initialChildSize: 0.85,
@@ -1508,12 +1556,20 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
   }
 
   @override
+  void didUpdateWidget(covariant ManualEditorScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.active && !widget.active) _stopPreviewPlayback();
+  }
+
+  @override
   Widget build(BuildContext context) {
     return KeyboardListener(
       focusNode: _playbackFocusNode,
-      autofocus: true,
+      autofocus: widget.active,
       onKeyEvent: (event) {
-        if (event is! KeyDownEvent || _keyboardFocusIsTextInput()) {
+        if (!widget.active ||
+            event is! KeyDownEvent ||
+            _keyboardFocusIsTextInput()) {
           return;
         }
         final isModifierPressed =
@@ -1584,7 +1640,7 @@ class _ManualEditorScreenState extends State<ManualEditorScreen> {
 
           if (wide) {
             final workspaceHeight = math.max(
-              _editorView == _EditorView.edit ? 720.0 : 760.0,
+              _editorView == _EditorView.edit ? 510.0 : 540.0,
               constraints.maxHeight - 180,
             );
             return SingleChildScrollView(
@@ -1992,7 +2048,7 @@ class _VerticalResizeHandle extends StatelessWidget {
             child: Container(
               width: 2,
               decoration: BoxDecoration(
-                color: const Color(0xFF39352B),
+                color: Brand.line,
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
@@ -2021,7 +2077,7 @@ class _HorizontalResizeHandle extends StatelessWidget {
             child: Container(
               height: 2,
               decoration: BoxDecoration(
-                color: const Color(0xFF39352B),
+                color: Brand.line,
                 borderRadius: BorderRadius.circular(10),
               ),
             ),
@@ -2137,7 +2193,7 @@ class _PlaybackControls extends StatelessWidget {
           Text(
             _seconds(timelineDuration),
             style: const TextStyle(
-              color: Color(0xFFCEC9BD),
+              color: Brand.muted,
               fontFeatures: [FontFeature.tabularFigures()],
             ),
           ),
@@ -2329,8 +2385,9 @@ class _EditorToolbar extends StatelessWidget {
               if (!desktopRendererAvailable) ...[
                 const SizedBox(height: 12),
                 const _InlineNotice(
-                  icon: Icons.desktop_windows_outlined,
-                  text: 'Desktop FFmpeg rendering is wired first.',
+                  icon: Icons.devices_other_outlined,
+                  text:
+                      'Local timeline rendering is unavailable on this device.',
                 ),
               ],
               const SizedBox(height: 12),
@@ -2342,9 +2399,9 @@ class _EditorToolbar extends StatelessWidget {
                 status,
                 maxLines: 3,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFFCEC9BD),
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodyMedium?.copyWith(color: Brand.muted),
               ),
             ],
           );
@@ -2430,7 +2487,7 @@ class _MediaBinPanel extends StatelessWidget {
                       ? const Center(
                           child: Text(
                             'No clips',
-                            style: TextStyle(color: Color(0xFF8A857A)),
+                            style: TextStyle(color: Brand.faint),
                           ),
                         )
                       : ListView.separated(
@@ -2515,10 +2572,10 @@ class _TransitionLibraryTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(10),
-      color: active ? const Color(0xFF39352B) : const Color(0xFF191510),
+      color: active ? Brand.surfaceHover : Brand.surfaceSunken,
       child: Row(
         children: [
-          Icon(_transitionIconData(transition), color: const Color(0xFFB9B4A8)),
+          Icon(_transitionIconData(transition), color: Brand.muted),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
@@ -2529,7 +2586,7 @@ class _TransitionLibraryTile extends StatelessWidget {
           const Icon(
             Icons.drag_indicator_outlined,
             size: 18,
-            color: Color(0xFF8A857A),
+            color: Brand.faint,
           ),
         ],
       ),
@@ -2550,11 +2607,9 @@ class _MediaBinTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = clip.isVideo
-        ? const Color(0xFF7D8DFA)
-        : const Color(0xFF668C72);
+    final color = clip.isVideo ? Brand.blue : Brand.lime;
     return Material(
-      color: selected ? const Color(0xFF2C2719) : const Color(0xFF191510),
+      color: selected ? Brand.surfaceHover : Brand.surfaceSunken,
       borderRadius: BorderRadius.circular(10),
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -2584,10 +2639,7 @@ class _MediaBinTile extends StatelessWidget {
                     Text(
                       '${_seconds(clip.timelineStartSeconds)} - '
                       '${_seconds(clip.timelineEndSeconds)}',
-                      style: const TextStyle(
-                        color: Color(0xFF8A857A),
-                        fontSize: 12,
-                      ),
+                      style: const TextStyle(color: Brand.muted, fontSize: 12),
                     ),
                   ],
                 ),
@@ -2698,7 +2750,11 @@ class _PreviewCanvasPanel extends StatelessWidget {
           aspectRatio: canvasPreset.width / canvasPreset.height,
           child: ClipRect(
             child: DecoratedBox(
-              decoration: const BoxDecoration(color: Color(0xFF0D0B07)),
+              decoration: BoxDecoration(
+                color: visibleVideoClips.isEmpty && visibleTextClips.isEmpty
+                    ? Brand.surfaceSunken
+                    : Brand.mediaCanvas,
+              ),
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   return Stack(
@@ -2708,7 +2764,7 @@ class _PreviewCanvasPanel extends StatelessWidget {
                         const Center(
                           child: Icon(
                             Icons.smart_display_outlined,
-                            color: Color(0xFF55503F),
+                            color: Brand.lineStrong,
                             size: 58,
                           ),
                         ),
@@ -2881,16 +2937,14 @@ class _PreviewVideoLayer extends StatelessWidget {
                   : null,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: const Color(0xFF221D15),
+                  color: Brand.mediaCanvas,
                   border: Border.all(
-                    color: selected
-                        ? const Color(0xFFFFFFFF)
-                        : const Color(0x80FFFFFF),
+                    color: selected ? Brand.onMedia : Brand.mediaBorder,
                     width: selected ? 2 : 1,
                   ),
                   boxShadow: const [
                     BoxShadow(
-                      color: Color(0x66000000),
+                      color: Brand.mediaShadow,
                       blurRadius: 24,
                       offset: Offset(0, 12),
                     ),
@@ -2924,7 +2978,7 @@ class _PreviewVideoLayer extends StatelessWidget {
                                 : const Center(
                                     child: Icon(
                                       Icons.movie_creation_outlined,
-                                      color: Color(0xDDFFFFFF),
+                                      color: Brand.onMedia,
                                       size: 36,
                                     ),
                                   ),
@@ -2938,7 +2992,7 @@ class _PreviewVideoLayer extends StatelessWidget {
                             padding: EdgeInsets.all(8),
                             child: Icon(
                               Icons.play_arrow,
-                              color: Color(0xCCFFFFFF),
+                              color: Brand.onMediaMuted,
                               size: 18,
                             ),
                           ),
@@ -3000,7 +3054,7 @@ class _PreviewTextLayer extends StatelessWidget {
       shadows: text.shadow
           ? const [
               Shadow(
-                color: Color(0xCC000000),
+                color: Brand.mediaOverlay,
                 blurRadius: 6,
                 offset: Offset(2, 3),
               ),
@@ -3051,9 +3105,9 @@ class _PreviewTextLayer extends StatelessWidget {
                       ? const EdgeInsets.symmetric(horizontal: 10, vertical: 6)
                       : const EdgeInsets.all(3),
                   decoration: BoxDecoration(
-                    color: text.box ? const Color(0x73000000) : null,
+                    color: text.box ? Brand.mediaLabel : null,
                     border: selected
-                        ? Border.all(color: const Color(0xFFFFFFFF), width: 1.5)
+                        ? Border.all(color: Brand.onMedia, width: 1.5)
                         : null,
                     borderRadius: BorderRadius.circular(5),
                   ),
@@ -3576,12 +3630,12 @@ class _TimelinePanelState extends State<_TimelinePanel> {
                                         horizontal: 5,
                                         vertical: 2,
                                       ),
-                                      color: const Color(0xFF7D8DFA),
+                                      color: Brand.blue,
                                       child: Text(
                                         'END ${_seconds(selectedClip.timelineEndSeconds)}',
                                         maxLines: 1,
                                         style: const TextStyle(
-                                          color: Color(0xFF0D0B07),
+                                          color: Brand.surfaceSunken,
                                           fontSize: 9,
                                           fontWeight: FontWeight.w800,
                                         ),
@@ -3591,7 +3645,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
                                       child: Center(
                                         child: Container(
                                           width: 1,
-                                          color: const Color(0xFF7D8DFA),
+                                          color: Brand.blue,
                                         ),
                                       ),
                                     ),
@@ -3627,10 +3681,7 @@ class _TimelinePanelState extends State<_TimelinePanel> {
                               child: SizedBox(
                                 width: 16,
                                 child: Center(
-                                  child: Container(
-                                    width: 3,
-                                    color: const Color(0xFFC9F63C),
-                                  ),
+                                  child: Container(width: 3, color: Brand.lime),
                                 ),
                               ),
                             ),
@@ -3747,13 +3798,10 @@ class _TimelineRuler extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Container(width: 1, height: 8, color: const Color(0xFF55503F)),
+                Container(width: 1, height: 8, color: Brand.lineStrong),
                 Text(
                   _rulerLabel(marker * markerStepSeconds),
-                  style: const TextStyle(
-                    color: Color(0xFF8A857A),
-                    fontSize: 11,
-                  ),
+                  style: const TextStyle(color: Brand.muted, fontSize: 11),
                 ),
               ],
             ),
@@ -3845,11 +3893,11 @@ class _TimelineTrackRow extends StatelessWidget {
         final acceptingDrop = candidateData.isNotEmpty;
         return DecoratedBox(
           decoration: BoxDecoration(
-            color: acceptingDrop ? const Color(0x223FAF86) : Colors.transparent,
+            color: acceptingDrop ? Brand.surfaceHover : Colors.transparent,
             border: Border(
-              top: const BorderSide(color: Color(0xFF302B20)),
+              top: const BorderSide(color: Brand.line),
               bottom: acceptingDrop
-                  ? const BorderSide(color: Color(0xFF7D8DFA))
+                  ? const BorderSide(color: Brand.blue)
                   : BorderSide.none,
             ),
           ),
@@ -3860,7 +3908,7 @@ class _TimelineTrackRow extends StatelessWidget {
                 top: 8,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: const Color(0xE6161309),
+                    color: Brand.surfaceRaised,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Padding(
@@ -3871,7 +3919,7 @@ class _TimelineTrackRow extends StatelessWidget {
                     child: Text(
                       track.label,
                       style: const TextStyle(
-                        color: Color(0xFFCEC9BD),
+                        color: Brand.cream,
                         fontSize: 12,
                         fontWeight: FontWeight.w700,
                       ),
@@ -4044,10 +4092,10 @@ class _TimelineClipBlock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = clip.isVideo
-        ? const Color(0xFF3D53F5)
+        ? Brand.videoTrack
         : clip.isText
-        ? const Color(0xFF9A5BCE)
-        : const Color(0xFF466B52);
+        ? Brand.textTrack
+        : Brand.audioTrack;
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
@@ -4069,9 +4117,7 @@ class _TimelineClipBlock extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(10),
               border: Border.all(
-                color: selected
-                    ? const Color(0xFFFFFFFF)
-                    : const Color(0x66FFFFFF),
+                color: selected ? Brand.lime : Brand.lineStrong,
                 width: selected ? 2 : 1,
               ),
             ),
@@ -4104,7 +4150,7 @@ class _TimelineClipBlock extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
-                              color: Color(0xFFFAF7F1),
+                              color: Brand.cream,
                               fontWeight: FontWeight.w700,
                               fontSize: 12,
                             ),
@@ -4128,13 +4174,10 @@ class _TimelineClipBlock extends StatelessWidget {
                     ),
                     child: IgnorePointer(
                       child: Container(
-                        color: const Color(0x2EFFFFFF),
+                        color: Brand.surfaceHover,
                         foregroundDecoration: const BoxDecoration(
                           border: Border(
-                            right: BorderSide(
-                              color: Color(0xFFE4E0D6),
-                              width: 1,
-                            ),
+                            right: BorderSide(color: Brand.cream, width: 1),
                           ),
                         ),
                       ),
@@ -4208,7 +4251,7 @@ class _TrimHandle extends StatelessWidget {
                 width: 3,
                 height: 22,
                 decoration: BoxDecoration(
-                  color: const Color(0xDDFFFFFF),
+                  color: Brand.onMedia,
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -4232,11 +4275,11 @@ class _TransitionDragChip extends StatelessWidget {
       message: 'Drag ${_transitionName(transition)}',
       child: Container(
         padding: const EdgeInsets.all(3),
-        color: active ? const Color(0xFF39352B) : const Color(0xCC111111),
+        color: active ? Brand.surfaceHover : Brand.surfaceRaised,
         child: Icon(
           _transitionIconData(transition),
           size: 14,
-          color: const Color(0xFFEDEAE2),
+          color: Brand.cream,
         ),
       ),
     );
@@ -4280,10 +4323,7 @@ class _AdvancedVideoInspectorPanel extends StatelessWidget {
           children: [
             Row(
               children: [
-                const Icon(
-                  Icons.movie_creation_outlined,
-                  color: Color(0xFF7D8DFA),
-                ),
+                const Icon(Icons.movie_creation_outlined, color: Brand.blue),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Text(
@@ -5035,7 +5075,7 @@ class _TextInspectorPanel extends StatelessWidget {
             children: [
               const Row(
                 children: [
-                  Icon(Icons.text_fields_outlined, color: Color(0xFFB982E3)),
+                  Icon(Icons.text_fields_outlined, color: Brand.textAccent),
                   SizedBox(width: 10),
                   Text(
                     'Text overlay',
@@ -5340,7 +5380,7 @@ class _TextColorControl extends StatelessWidget {
             const Icon(
               Icons.format_color_text_outlined,
               size: 19,
-              color: Color(0xFFCEC9BD),
+              color: Brand.cream,
             ),
             const SizedBox(width: 10),
             const Expanded(child: Text('Text colour')),
@@ -5350,7 +5390,7 @@ class _TextColorControl extends StatelessWidget {
               decoration: BoxDecoration(
                 color: _colorFromHex(colorHex),
                 shape: BoxShape.circle,
-                border: Border.all(color: const Color(0x66FFFFFF)),
+                border: Border.all(color: Brand.lineStrong),
               ),
             ),
           ],
@@ -5374,8 +5414,8 @@ class _TextColorControl extends StatelessWidget {
                       shape: BoxShape.circle,
                       border: Border.all(
                         color: colorHex.toUpperCase() == preset
-                            ? const Color(0xFFFFFFFF)
-                            : const Color(0x55FFFFFF),
+                            ? Brand.lime
+                            : Brand.lineStrong,
                         width: colorHex.toUpperCase() == preset ? 3 : 1,
                       ),
                     ),
@@ -5427,7 +5467,7 @@ class _InspectorPanel extends StatelessWidget {
           ? const Center(
               child: Text(
                 'Select a clip',
-                style: TextStyle(color: Color(0xFF8A857A)),
+                style: TextStyle(color: Brand.muted),
               ),
             )
           : Scrollbar(
@@ -5442,9 +5482,7 @@ class _InspectorPanel extends StatelessWidget {
                           clip.isVideo
                               ? Icons.movie_creation_outlined
                               : Icons.graphic_eq_outlined,
-                          color: clip.isVideo
-                              ? const Color(0xFF7D8DFA)
-                              : const Color(0xFF668C72),
+                          color: clip.isVideo ? Brand.blue : Brand.lime,
                         ),
                         const SizedBox(width: 10),
                         Expanded(
@@ -5724,13 +5762,13 @@ class _ValueControl extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 19, color: const Color(0xFFCEC9BD)),
+              Icon(icon, size: 19, color: Brand.muted),
               const SizedBox(width: 10),
               Expanded(child: Text(label)),
               Text(
                 displayValue,
                 style: const TextStyle(
-                  color: Color(0xFFCEC9BD),
+                  color: Brand.muted,
                   fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
@@ -5766,9 +5804,9 @@ class _EditorPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1812),
+        color: Brand.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF39352B)),
+        border: Border.all(color: Brand.line),
       ),
       child: Padding(
         padding: const EdgeInsets.all(14),
@@ -5834,9 +5872,9 @@ class _InlineNotice extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF241F16),
+        color: Brand.surfaceRaised,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF443F33)),
+        border: Border.all(color: Brand.lineStrong),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),

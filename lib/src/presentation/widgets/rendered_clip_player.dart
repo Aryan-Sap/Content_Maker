@@ -6,6 +6,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:path/path.dart' as p;
+import 'package:video_player/video_player.dart';
 
 import '../../domain/rendering/media_metadata.dart';
 import '../../infrastructure/ffmpeg/ffmpeg_executables.dart';
@@ -35,6 +36,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
   );
   Process? _audioProcess;
   Timer? _positionTimer;
+  VideoPlayerController? _nativeController;
 
   double _positionSeconds = 0;
   bool _isPlaying = false;
@@ -42,8 +44,17 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
   DateTime? _playStartedAt;
   double _playStartPosition = 0;
   int _stillFrameRequest = 0;
+  int _nativeLoadRequest = 0;
 
-  double get _durationSeconds => _metadata?.durationSeconds ?? 0;
+  bool get _usesNativePlayer => Platform.isAndroid || Platform.isIOS;
+
+  double get _durationSeconds {
+    final nativeController = _nativeController;
+    if (nativeController != null) {
+      return nativeController.value.duration.inMilliseconds / 1000;
+    }
+    return _metadata?.durationSeconds ?? 0;
+  }
 
   @override
   void initState() {
@@ -56,6 +67,9 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.videoPath != widget.videoPath) {
       _stopPlayback();
+      final oldController = _nativeController;
+      _nativeController = null;
+      if (oldController != null) unawaited(oldController.dispose());
       _positionSeconds = 0;
       _clearImages();
       _metadata = null;
@@ -65,7 +79,11 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
 
   @override
   void dispose() {
+    _nativeLoadRequest++;
     _stopPlayback(updateState: false);
+    _nativeController?.removeListener(_handleNativePlayerUpdate);
+    final nativeController = _nativeController;
+    if (nativeController != null) unawaited(nativeController.dispose());
     _videoPlayer.dispose();
     _previousImage?.dispose();
     _currentImage?.dispose();
@@ -111,6 +129,10 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
   }
 
   Future<void> _load() async {
+    if (_usesNativePlayer) {
+      await _loadNativePlayer();
+      return;
+    }
     try {
       final metadata = await _probe.probe(widget.videoPath);
       if (!mounted) {
@@ -120,6 +142,45 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
       await _showStillFrame(0);
     } catch (_) {
       // Leave the placeholder; playback controls stay disabled.
+    }
+  }
+
+  Future<void> _loadNativePlayer() async {
+    final request = ++_nativeLoadRequest;
+    final controller = VideoPlayerController.file(File(widget.videoPath));
+    try {
+      await controller.initialize();
+      if (!mounted || request != _nativeLoadRequest) {
+        await controller.dispose();
+        return;
+      }
+      controller.addListener(_handleNativePlayerUpdate);
+      setState(() {
+        _nativeController = controller;
+        _metadata = MediaMetadata(
+          path: widget.videoPath,
+          durationSeconds: controller.value.duration.inMilliseconds / 1000,
+          width: controller.value.size.width.round(),
+          height: controller.value.size.height.round(),
+          hasAudio: true,
+        );
+      });
+    } catch (_) {
+      await controller.dispose();
+    }
+  }
+
+  void _handleNativePlayerUpdate() {
+    final controller = _nativeController;
+    if (!mounted || controller == null) return;
+    final value = controller.value;
+    final nextPosition = value.position.inMilliseconds / 1000;
+    if ((nextPosition - _positionSeconds).abs() >= 0.05 ||
+        value.isPlaying != _isPlaying) {
+      setState(() {
+        _positionSeconds = nextPosition.clamp(0.0, _durationSeconds);
+        _isPlaying = value.isPlaying;
+      });
     }
   }
 
@@ -154,9 +215,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
           bytes.isEmpty) {
         return;
       }
-      final codec = await ui.instantiateImageCodec(
-        Uint8List.fromList(bytes),
-      );
+      final codec = await ui.instantiateImageCodec(Uint8List.fromList(bytes));
       final frame = await codec.getNextFrame();
       codec.dispose();
       if (!mounted || request != _stillFrameRequest || _isPlaying) {
@@ -175,6 +234,15 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     }
     if (_positionSeconds >= _durationSeconds - 0.05) {
       _positionSeconds = 0;
+    }
+    final nativeController = _nativeController;
+    if (_usesNativePlayer && nativeController != null) {
+      await nativeController.seekTo(
+        Duration(milliseconds: (_positionSeconds * 1000).round()),
+      );
+      await nativeController.play();
+      if (mounted) setState(() => _isPlaying = true);
+      return;
     }
     setState(() => _isPlaying = true);
     _playStartedAt = DateTime.now();
@@ -238,6 +306,10 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     _videoPlayer.stop();
     _audioProcess?.kill();
     _audioProcess = null;
+    final nativeController = _nativeController;
+    if (_usesNativePlayer && nativeController != null) {
+      unawaited(nativeController.pause());
+    }
     if (!updateState || !mounted) {
       _isPlaying = false;
       return;
@@ -265,7 +337,15 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
     setState(
       () => _positionSeconds = seconds.clamp(0.0, _durationSeconds).toDouble(),
     );
-    if (wasPlaying) {
+    final nativeController = _nativeController;
+    if (_usesNativePlayer && nativeController != null) {
+      unawaited(() async {
+        await nativeController.seekTo(
+          Duration(milliseconds: (_positionSeconds * 1000).round()),
+        );
+        if (wasPlaying) await nativeController.play();
+      }());
+    } else if (wasPlaying) {
       unawaited(_play());
     } else {
       unawaited(_showStillFrame(_positionSeconds));
@@ -281,6 +361,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
         ? metadata!.width! / metadata.height!
         : 9 / 16;
     final currentImage = _currentImage;
+    final nativeController = _nativeController;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -307,7 +388,11 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
               child: ClipRect(
                 child: ColoredBox(
                   color: Colors.black,
-                  child: currentImage == null
+                  child:
+                      _usesNativePlayer &&
+                          nativeController?.value.isInitialized == true
+                      ? VideoPlayer(nativeController!)
+                      : currentImage == null
                       ? const Center(
                           child: Icon(
                             Icons.movie_outlined,
@@ -333,9 +418,7 @@ class _RenderedClipPlayerState extends State<RenderedClipPlayer> {
               tooltip: _isPlaying ? 'Pause' : 'Play',
               onPressed: _durationSeconds > 0 ? _togglePlayback : null,
               icon: Icon(
-                _isPlaying
-                    ? Icons.pause_outlined
-                    : Icons.play_arrow_outlined,
+                _isPlaying ? Icons.pause_outlined : Icons.play_arrow_outlined,
               ),
             ),
             const SizedBox(width: 8),

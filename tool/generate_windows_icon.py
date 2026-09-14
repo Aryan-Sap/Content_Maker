@@ -1,70 +1,27 @@
-"""Generate the Windows icon from the in-app Content Maker brand mark."""
+"""Package the approved transparent Flutter vector-mark export for app platforms.
 
-from __future__ import annotations
-
-import math
+To refresh the master after changing BrandLogo, run the logo export test and
+copy outputs/app-redesign/logo-launcher.png to assets/branding/content-maker-launcher.png.
+The in-app and OAuth master retains its dark M.
+"""
 from pathlib import Path
-
-from PIL import Image, ImageDraw, ImageFont
-
+from base64 import b64encode
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-ICON_PATH = ROOT / "windows" / "runner" / "resources" / "app_icon.ico"
-PREVIEW_PATH = ROOT / "windows" / "runner" / "resources" / "app_icon.png"
-FONT_PATH = ROOT / "assets" / "fonts" / "BricolageGrotesque-800.ttf"
-
-SIZE = 512
-INK = "#16130D"
-LIME = "#C9F63C"
-CREAM = "#FAF7F1"
-
-
-def point_on_circle(center: float, radius: float, angle: float) -> tuple[float, float]:
-    radians = math.radians(angle)
-    return (
-        center + radius * math.cos(radians),
-        center + radius * math.sin(radians),
-    )
-
-
-image = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-draw = ImageDraw.Draw(image)
-
-# A dark circular plate keeps the mark readable at 16px and on light taskbars.
-draw.ellipse((18, 18, SIZE - 18, SIZE - 18), fill=INK)
-
-center = SIZE / 2
-radius = 174
-stroke = 58
-arc_bounds = (
-    center - radius,
-    center - radius,
-    center + radius,
-    center + radius,
-)
-start_angle = -146
-end_angle = 143
-draw.arc(arc_bounds, start=start_angle, end=end_angle, fill=LIME, width=stroke)
-
-# Pillow arcs have square caps, so add the round caps used by the Flutter logo.
-cap_radius = stroke / 2
-for angle in (start_angle, end_angle):
-    x, y = point_on_circle(center, radius, angle)
-    draw.ellipse(
-        (x - cap_radius, y - cap_radius, x + cap_radius, y + cap_radius),
-        fill=LIME,
-    )
-
-# Keep a little more breathing room between the letter and the lime ring so the
-# mark stays crisp when browsers reduce it to a 16 px favicon.
-font = ImageFont.truetype(str(FONT_PATH), 224)
-draw.text((center, center + 11), "M", font=font, fill=CREAM, anchor="mm")
-
-image.save(PREVIEW_PATH)
-image.save(
-    ICON_PATH,
-    format="ICO",
-    sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-)
-
-print(f"Generated {ICON_PATH}")
+MASTER = ROOT / 'assets/branding/content-maker-launcher.png'
+image = Image.open(MASTER).convert('RGBA')
+assert image.getpixel((0, 0))[3] == 0, 'The approved logo must be transparent.'
+resources = ROOT / 'windows/runner/resources'
+image.save(resources / 'app_icon.png')
+image.save(resources / 'app_icon.ico', format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)])
+Image.open(ROOT / 'assets/branding/content-maker-logo.png').save(ROOT / 'assets/branding/content-maker-oauth-logo.png')
+for density, size in {'mdpi':48,'hdpi':72,'xhdpi':96,'xxhdpi':144,'xxxhdpi':192}.items():
+    image.resize((size,size), Image.Resampling.LANCZOS).save(ROOT / f'android/app/src/main/res/mipmap-{density}/ic_launcher.png')
+public = ROOT / 'website/website/public'
+image.save(public / 'content-maker-icon.png')
+image.save(public / 'content-maker-icon-white-m.png')
+# Embedding the master keeps favicon identity exact without requiring a web font.
+encoded = b64encode(MASTER.read_bytes()).decode('ascii')
+(public / 'favicon.svg').write_text(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><image width="512" height="512" href="data:image/png;base64,{encoded}"/></svg>\n', encoding='utf-8')
+print('Packaged transparent Windows, Android, OAuth and local website logo assets.')

@@ -14,8 +14,10 @@ import '../domain/rendering/composition_spec.dart';
 import '../domain/rendering/export_settings.dart';
 import '../domain/rendering/render_job.dart';
 import '../domain/rendering/render_preset.dart';
+import '../domain/rendering/timecode.dart';
 import '../domain/rendering/video_asset.dart';
 import '../infrastructure/ffmpeg/ffmpeg_video_processor.dart';
+import '../infrastructure/files/media_picker.dart';
 import '../infrastructure/notifications/desktop_notifier.dart';
 import 'manual_editor_screen.dart';
 import 'onboarding/guided_tour_overlay.dart';
@@ -41,6 +43,15 @@ extension _WorkspaceModeDetails on _WorkspaceMode {
     return switch (this) {
       _WorkspaceMode.automatic => Icons.auto_awesome_outlined,
       _WorkspaceMode.manual => Icons.timeline_outlined,
+    };
+  }
+
+  String get description {
+    return switch (this) {
+      _WorkspaceMode.automatic =>
+        'Format a source clip for a polished social export.',
+      _WorkspaceMode.manual =>
+        'Build a composed edit with a multi-track timeline.',
     };
   }
 }
@@ -152,6 +163,8 @@ class RenderHomeScreen extends StatefulWidget {
   const RenderHomeScreen({
     super.key,
     this.projectName,
+    this.initialProjectPath,
+    this.onProjectSaved,
     this.initialPipeline = ProjectPipeline.simple,
     this.guidedTour = false,
     this.onGuidedTourFinished,
@@ -159,6 +172,8 @@ class RenderHomeScreen extends StatefulWidget {
 
   /// Shown in the app bar when opened from the project hub.
   final String? projectName;
+  final String? initialProjectPath;
+  final Future<void> Function(String)? onProjectSaved;
 
   /// Chooses the workspace the project opens into (the switcher stays
   /// available so users can move between pipelines at any time).
@@ -171,12 +186,10 @@ class RenderHomeScreen extends StatefulWidget {
 }
 
 class _RenderHomeScreenState extends State<RenderHomeScreen> {
-  static const _filePickerChannel = MethodChannel('content_maker/file_picker');
-
   final _sourceController = TextEditingController();
   final _outputController = TextEditingController();
   final _audioController = TextEditingController();
-  final _trimStartController = TextEditingController(text: '0');
+  final _trimStartController = TextEditingController(text: '0:00');
   final _trimEndController = TextEditingController();
   final _workspaceScrollController = ScrollController();
   final _addVideosTourKey = GlobalKey();
@@ -231,9 +244,10 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   @override
   void initState() {
     super.initState();
-    _workspaceMode = widget.initialPipeline == ProjectPipeline.custom
-        ? _WorkspaceMode.manual
-        : _WorkspaceMode.automatic;
+    _workspaceMode = switch (widget.initialPipeline) {
+      ProjectPipeline.custom => _WorkspaceMode.manual,
+      ProjectPipeline.simple => _WorkspaceMode.automatic,
+    };
     _guidedTourActive = widget.guidedTour;
     _sourceController.addListener(_suggestOutputPath);
     unawaited(_loadEditPresets());
@@ -390,7 +404,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         totalSteps: total,
         title: 'Switch editing methods',
         description:
-            'Click Custom Editor. This is the actual workspace switcher, so you can move between both methods inside any project.',
+            'Click Custom Editor. This workspace switcher lets you move between all three editing methods inside any project.',
         onSkip: _finishGuidedTour,
         accent: Brand.blue,
         onNext: _continueToManualEditor,
@@ -456,19 +470,18 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   }
 
   double _readTrimSecondsOrDefault(String value, double fallback) {
-    final text = value.trim();
-    if (text.isEmpty) {
-      return fallback;
-    }
-    return double.tryParse(text) ?? fallback;
+    return parseTrimTimecode(value) ?? fallback;
   }
 
   double? _readOptionalTrimSeconds(String value) {
-    final text = value.trim();
-    if (text.isEmpty) {
-      return null;
+    return parseTrimTimecode(value);
+  }
+
+  void _normalizeTrimTimecode(TextEditingController controller) {
+    final seconds = parseTrimTimecode(controller.text);
+    if (seconds != null) {
+      controller.text = formatTrimTimecode(seconds);
     }
-    return double.tryParse(text);
   }
 
   void _applyEditPreset(AutoEditPreset editPreset) {
@@ -480,10 +493,12 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
       _overlayAudioVolume = editPreset.overlayAudioVolume
           .clamp(0, 2)
           .toDouble();
-      _trimStartController.text = _formatNumber(editPreset.trimStartSeconds);
+      _trimStartController.text = formatTrimTimecode(
+        editPreset.trimStartSeconds,
+      );
       _trimEndController.text = editPreset.trimEndSeconds == null
           ? ''
-          : _formatNumber(editPreset.trimEndSeconds!);
+          : formatTrimTimecode(editPreset.trimEndSeconds!);
       _progress = null;
       _status = 'Applied ${editPreset.name}.';
     });
@@ -678,12 +693,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
     }
 
     try {
-      var selectedPaths = await _filePickerChannel.invokeListMethod<String>(
-        'pickVideos',
-      );
-      selectedPaths ??= [
-        ?await _filePickerChannel.invokeMethod<String>('pickVideo'),
-      ];
+      final selectedPaths = await MediaPicker.videos();
       final sourcePaths = selectedPaths
           .map(_cleanPath)
           .where((path) => path.isNotEmpty)
@@ -760,9 +770,7 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
     }
 
     try {
-      final selectedPath = await _filePickerChannel.invokeMethod<String>(
-        'pickAudio',
-      );
+      final selectedPath = await MediaPicker.audio();
       if (!mounted || selectedPath == null || selectedPath.trim().isEmpty) {
         return;
       }
@@ -923,16 +931,15 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
   }
 
   double? _readTrimSeconds(String value, String label) {
-    final text = value.trim();
-    if (text.isEmpty) {
+    if (value.trim().isEmpty) {
       return null;
     }
 
-    final seconds = double.tryParse(text);
-    if (seconds == null || seconds < 0) {
+    final seconds = parseTrimTimecode(value);
+    if (seconds == null) {
       setState(() {
         _progress = null;
-        _status = '$label must be a positive number of seconds.';
+        _status = '$label must use m:ss, for example 1:30.';
       });
       return null;
     }
@@ -978,6 +985,10 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
         : _readTrimSeconds(trimEndText, 'Trim end');
     if (trimEndText.isNotEmpty && trimEndSeconds == null) {
       return;
+    }
+    _trimStartController.text = formatTrimTimecode(trimStartSeconds);
+    if (trimEndSeconds != null) {
+      _trimEndController.text = formatTrimTimecode(trimEndSeconds);
     }
     if (trimEndSeconds != null && trimEndSeconds <= trimStartSeconds) {
       setState(() {
@@ -1207,8 +1218,12 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final compactAppBar = MediaQuery.sizeOf(context).width < 980;
     final desktopRendererAvailable =
         Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+    final automaticRendererAvailable =
+        desktopRendererAvailable || Platform.isAndroid || Platform.isIOS;
 
     final projectName = widget.projectName;
 
@@ -1218,28 +1233,52 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
           appBar: AppBar(
             title: Row(
               children: [
-                const BrandWordmark(size: 15),
-                if (projectName != null) ...[
+                IconButton(
+                  tooltip: 'Back to studio',
+                  onPressed: () => Navigator.maybePop(context),
+                  icon: const Icon(Icons.arrow_back_outlined, size: 20),
+                ),
+                const SizedBox(width: 4),
+                BrandWordmark(size: compactAppBar ? 13 : 15),
+                if (!compactAppBar) ...[
+                  const SizedBox(width: 18),
+                  Container(width: 1, height: 20, color: Brand.lineStrong),
                   const SizedBox(width: 14),
+                ] else
+                  const SizedBox(width: 10),
+                Flexible(
+                  child: Text(
+                    projectName ?? 'Untitled project',
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontFamily: Brand.bodyFont,
+                      fontWeight: FontWeight.w600,
+                      color: Brand.cream,
+                    ),
+                  ),
+                ),
+                if (projectName != null && !compactAppBar) ...[
+                  const SizedBox(width: 10),
                   Flexible(
                     child: Container(
                       padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 4,
+                        horizontal: 8,
+                        vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: Brand.surfaceRaised,
-                        borderRadius: BorderRadius.circular(6),
+                        color: Brand.surfaceHover,
+                        borderRadius: BorderRadius.circular(999),
                         border: Border.all(color: Brand.line),
                       ),
                       child: Text(
-                        projectName,
+                        'LOCAL PROJECT',
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
                           fontFamily: Brand.bodyFont,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: Brand.muted,
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.75,
+                          color: Brand.faint,
                         ),
                       ),
                     ),
@@ -1248,93 +1287,128 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
               ],
             ),
             actions: [
-              if (_workspaceMode == _WorkspaceMode.automatic)
+              if (_workspaceMode == _WorkspaceMode.automatic && !compactAppBar)
                 Padding(
-                  padding: const EdgeInsets.only(right: 16),
+                  padding: const EdgeInsets.only(right: 10),
                   child: Center(
-                    child: Text(
-                      '${_preset.composition.width}x${_preset.composition.height} @ ${_preset.exportSettings.frameRate}fps',
-                      overflow: TextOverflow.ellipsis,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Brand.surfaceSunken,
+                        border: Border.all(color: Brand.line),
+                        borderRadius: BorderRadius.circular(7),
+                      ),
+                      child: Text(
+                        '${_preset.composition.width} × ${_preset.composition.height} · ${_preset.exportSettings.frameRate} fps',
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Brand.muted,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              IconButton(
-                tooltip: 'Connected accounts',
-                icon: const Icon(Icons.account_circle_outlined),
-                onPressed: () => AccountsDialog.show(context),
+              Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: compactAppBar
+                    ? IconButton(
+                        tooltip: 'Connected accounts',
+                        onPressed: () => AccountsDialog.show(context),
+                        icon: const Icon(Icons.account_circle_outlined),
+                      )
+                    : OutlinedButton.icon(
+                        onPressed: () => AccountsDialog.show(context),
+                        icon: const Icon(
+                          Icons.account_circle_outlined,
+                          size: 18,
+                        ),
+                        label: const Text('Accounts'),
+                      ),
               ),
             ],
           ),
           body: SafeArea(
             child: Column(
               children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                  child: KeyedSubtree(
-                    key: _modeSwitcherTourKey,
-                    child: _ModeSwitcher(
-                      selectedMode: _workspaceMode,
-                      onChanged: (mode) {
-                        setState(() {
-                          _workspaceMode = mode;
-                        });
-                        if (_guidedTourActive &&
-                            _guidedTourStep == 5 &&
-                            mode == _WorkspaceMode.manual) {
-                          _setGuidedTourStep(6);
-                        }
-                      },
+                SizedBox(
+                  height: MediaQuery.sizeOf(context).width < 900 ? 106 : 64,
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                    child: KeyedSubtree(
+                      key: _modeSwitcherTourKey,
+                      child: _ModeSwitcher(
+                        selectedMode: _workspaceMode,
+                        onChanged: (mode) {
+                          setState(() {
+                            _workspaceMode = mode;
+                          });
+                          if (_guidedTourActive &&
+                              _guidedTourStep == 5 &&
+                              mode == _WorkspaceMode.manual) {
+                            _setGuidedTourStep(6);
+                          }
+                        },
+                      ),
                     ),
                   ),
                 ),
                 Expanded(
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 280),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeIn,
-                    transitionBuilder: (child, animation) {
-                      return FadeTransition(
-                        opacity: animation,
-                        child: SlideTransition(
-                          position: Tween<Offset>(
-                            begin: const Offset(0, 0.015),
-                            end: Offset.zero,
-                          ).animate(animation),
-                          child: child,
-                        ),
-                      );
-                    },
-                    child: _workspaceMode == _WorkspaceMode.automatic
-                        ? _buildAutomaticWorkspace(desktopRendererAvailable)
-                        : ManualEditorScreen(
-                            key: const ValueKey('manual-editor'),
-                            desktopRendererAvailable: desktopRendererAvailable,
-                            addVideoTourKey: _manualAddVideoTourKey,
-                            addTextTourKey: _manualAddTextTourKey,
-                            textFieldTourKey: _manualTextFieldTourKey,
-                            exportTourKey: _manualExportTourKey,
-                            onGuidedVideoAdded: () {
-                              if (_guidedTourActive && _guidedTourStep == 6) {
-                                _setGuidedTourStep(7);
-                              }
-                            },
-                            onGuidedTextAdded: () {
-                              if (_guidedTourActive && _guidedTourStep == 7) {
-                                _guidedTextAdded = true;
-                                _setGuidedTourStep(8);
-                              }
-                            },
-                            onGuidedTextEdited: () {
-                              if (_guidedTourActive && _guidedTourStep == 8) {
-                                _setGuidedTourStep(9);
-                              }
-                            },
-                            onGuidedExportStarted: () {
-                              if (_guidedTourActive && _guidedTourStep == 9) {
-                                unawaited(_finishGuidedTour());
-                              }
-                            },
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => SizedBox(
+                      height: constraints.maxHeight,
+                      child: IndexedStack(
+                        index: _workspaceMode.index,
+                        children: [
+                          TickerMode(
+                            enabled: _workspaceMode == _WorkspaceMode.automatic,
+                            child: _buildAutomaticWorkspace(
+                              automaticRendererAvailable,
+                            ),
                           ),
+                          TickerMode(
+                            enabled: _workspaceMode == _WorkspaceMode.manual,
+                            child: ManualEditorScreen(
+                              key: const ValueKey('manual-editor'),
+                              initialProjectPath: widget.initialProjectPath,
+                              onProjectSaved: widget.onProjectSaved,
+                              active: _workspaceMode == _WorkspaceMode.manual,
+                              desktopRendererAvailable:
+                                  automaticRendererAvailable,
+                              addVideoTourKey: _manualAddVideoTourKey,
+                              addTextTourKey: _manualAddTextTourKey,
+                              textFieldTourKey: _manualTextFieldTourKey,
+                              exportTourKey: _manualExportTourKey,
+                              onGuidedVideoAdded: () {
+                                if (_guidedTourActive && _guidedTourStep == 6) {
+                                  _setGuidedTourStep(7);
+                                }
+                              },
+                              onGuidedTextAdded: () {
+                                if (_guidedTourActive && _guidedTourStep == 7) {
+                                  _guidedTextAdded = true;
+                                  _setGuidedTourStep(8);
+                                }
+                              },
+                              onGuidedTextEdited: () {
+                                if (_guidedTourActive && _guidedTourStep == 8) {
+                                  _setGuidedTourStep(9);
+                                }
+                              },
+                              onGuidedExportStarted: () {
+                                if (_guidedTourActive && _guidedTourStep == 9) {
+                                  unawaited(_finishGuidedTour());
+                                }
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -1357,13 +1431,21 @@ class _RenderHomeScreenState extends State<RenderHomeScreen> {
           audioController: _audioController,
           trimStartController: _trimStartController,
           trimEndController: _trimEndController,
+          onTrimStartEditingComplete: () =>
+              _normalizeTrimTimecode(_trimStartController),
+          onTrimEndEditingComplete: () =>
+              _normalizeTrimTimecode(_trimEndController),
           queuedSources: _sourceQueue,
           savedEditPresets: _savedEditPresets,
           hasCopiedEdits: _copiedEditPreset != null,
           isRendering: _isRendering,
           canRender: _canRender && desktopRendererAvailable,
-          canChooseSource: Platform.isWindows && !_isRendering,
-          canChooseAudio: Platform.isWindows && !_isRendering,
+          canChooseSource:
+              (Platform.isWindows || Platform.isAndroid || Platform.isIOS) &&
+              !_isRendering,
+          canChooseAudio:
+              (Platform.isWindows || Platform.isAndroid || Platform.isIOS) &&
+              !_isRendering,
           resolution: _resolution,
           colorStyle: _colorStyle,
           sharpness: _preset.composition.sharpness,
@@ -1474,9 +1556,9 @@ class _PanelCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1812),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF39352B)),
+        color: Brand.surface,
+        borderRadius: BorderRadius.circular(Brand.radius),
+        border: Border.all(color: Brand.line),
       ),
       child: Padding(padding: const EdgeInsets.all(20), child: child),
     );
@@ -1491,28 +1573,40 @@ class _ModeSwitcher extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C1812),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF39352B)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(8),
-        child: SegmentedButton<_WorkspaceMode>(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final tabs = SegmentedButton<_WorkspaceMode>(
           showSelectedIcon: false,
           segments: [
             for (final mode in _WorkspaceMode.values)
               ButtonSegment(
                 value: mode,
-                icon: Icon(mode.icon),
+                icon: Icon(mode.icon, size: 18),
                 label: Text(mode.label),
               ),
           ],
           selected: {selectedMode},
-          onSelectionChanged: (selection) => onChanged(selection.first),
-        ),
-      ),
+          onSelectionChanged: (value) => onChanged(value.first),
+        );
+        final description = Text(
+          selectedMode.description,
+          style: Theme.of(
+            context,
+          ).textTheme.bodySmall?.copyWith(color: Brand.muted),
+        );
+        return constraints.maxWidth < 860
+            ? Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [tabs, const SizedBox(height: 8), description],
+              )
+            : Row(
+                children: [
+                  tabs,
+                  const SizedBox(width: 24),
+                  Expanded(child: description),
+                ],
+              );
+      },
     );
   }
 }
@@ -1524,6 +1618,8 @@ class _ControlsPanel extends StatelessWidget {
     required this.audioController,
     required this.trimStartController,
     required this.trimEndController,
+    required this.onTrimStartEditingComplete,
+    required this.onTrimEndEditingComplete,
     required this.queuedSources,
     required this.savedEditPresets,
     required this.hasCopiedEdits,
@@ -1576,6 +1672,8 @@ class _ControlsPanel extends StatelessWidget {
   final TextEditingController audioController;
   final TextEditingController trimStartController;
   final TextEditingController trimEndController;
+  final VoidCallback onTrimStartEditingComplete;
+  final VoidCallback onTrimEndEditingComplete;
   final List<String> queuedSources;
   final List<AutoEditPreset> savedEditPresets;
   final bool hasCopiedEdits;
@@ -1628,20 +1726,73 @@ class _ControlsPanel extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1812),
+        color: Brand.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF39352B)),
+        border: Border.all(color: Brand.line),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              'Renderer',
-              style: theme.textTheme.headlineSmall?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
+            Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: Brand.surfaceHover,
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: Brand.lineStrong),
+                  ),
+                  child: const Icon(
+                    Icons.auto_awesome_outlined,
+                    color: Brand.lime,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Automatic renderer',
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        'Configure the source, finish and export.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: Brand.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 5,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Brand.surfaceSunken,
+                    border: Border.all(color: Brand.line),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: const Text(
+                    'LOCAL',
+                    style: TextStyle(
+                      color: Brand.faint,
+                      fontSize: 9,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.8,
+                    ),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 18),
             TextField(
@@ -1724,11 +1875,11 @@ class _ControlsPanel extends StatelessWidget {
                   child: TextField(
                     controller: trimStartController,
                     enabled: !isRendering,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
+                    keyboardType: TextInputType.datetime,
+                    onEditingComplete: onTrimStartEditingComplete,
                     decoration: const InputDecoration(
-                      labelText: 'Start seconds',
+                      labelText: 'Start (m:ss)',
+                      helperText: 'Example 1:30',
                       prefixIcon: Icon(Icons.timer_outlined),
                     ),
                   ),
@@ -1738,11 +1889,11 @@ class _ControlsPanel extends StatelessWidget {
                   child: TextField(
                     controller: trimEndController,
                     enabled: !isRendering,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                    ),
+                    keyboardType: TextInputType.datetime,
+                    onEditingComplete: onTrimEndEditingComplete,
                     decoration: const InputDecoration(
-                      labelText: 'End seconds',
+                      labelText: 'End (m:ss)',
+                      helperText: 'Example 1:30',
                       prefixIcon: Icon(Icons.flag_outlined),
                     ),
                   ),
@@ -1942,9 +2093,13 @@ class _ControlsPanel extends StatelessWidget {
             ),
             const SizedBox(height: 18),
             if (!desktopRendererAvailable)
-              const _StatusBanner(
-                icon: Icons.desktop_windows_outlined,
-                text: 'Desktop FFmpeg rendering is wired first.',
+              _StatusBanner(
+                icon: Platform.isAndroid || Platform.isIOS
+                    ? Icons.phone_android_outlined
+                    : Icons.desktop_windows_outlined,
+                text: Platform.isAndroid || Platform.isIOS
+                    ? 'Manual timeline rendering is coming to mobile. Auto Render is available now.'
+                    : 'Desktop FFmpeg rendering is wired first.',
               ),
             FilledButton.icon(
               key: renderTourKey,
@@ -1963,9 +2118,7 @@ class _ControlsPanel extends StatelessWidget {
             ],
             Text(
               status,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFFCEC9BD),
-              ),
+              style: theme.textTheme.bodyMedium?.copyWith(color: Brand.muted),
             ),
           ],
         ),
@@ -1985,7 +2138,7 @@ class _QueueSourceTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 6),
       child: Material(
-        color: const Color(0xFF221D15),
+        color: Brand.surfaceRaised,
         borderRadius: BorderRadius.circular(10),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -1993,7 +2146,7 @@ class _QueueSourceTile extends StatelessWidget {
             children: [
               const Icon(
                 Icons.movie_creation_outlined,
-                color: Color(0xFFC9F63C),
+                color: Brand.lime,
                 size: 18,
               ),
               const SizedBox(width: 8),
@@ -2051,13 +2204,13 @@ class _ControlSlider extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 20, color: const Color(0xFFCEC9BD)),
+              Icon(icon, size: 20, color: Brand.muted),
               const SizedBox(width: 10),
               Expanded(child: Text(label)),
               Text(
                 displayValue,
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFFCEC9BD),
+                  color: Brand.muted,
                   fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
@@ -2091,9 +2244,9 @@ class _PreviewPanel extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFF1C1812),
+        color: Brand.surface,
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF39352B)),
+        border: Border.all(color: Brand.line),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -2180,14 +2333,14 @@ class _BlurPreviewBackground extends StatelessWidget {
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            Color(0xFF2C2719),
-            Color(0xFF241F16),
-            Color(0xFF39352B),
-            Color(0xFF1C1812),
+            Brand.surfaceHover,
+            Brand.surfaceRaised,
+            Brand.lineStrong,
+            Brand.surfaceSunken,
           ],
         ),
       ),
-      child: Container(color: const Color(0x66000000)),
+      child: Container(color: Brand.mediaShadow),
     );
   }
 }
@@ -2236,11 +2389,8 @@ class _CenteredForegroundPreview extends StatelessWidget {
                 child: Container(
                   height: 28,
                   alignment: Alignment.center,
-                  color: const Color(0x33000000),
-                  child: const Icon(
-                    Icons.drag_handle,
-                    color: Color(0xDDFFFFFF),
-                  ),
+                  color: Brand.shadow,
+                  child: const Icon(Icons.drag_handle, color: Brand.cream),
                 ),
               ),
             ),
@@ -2257,15 +2407,15 @@ class _ForegroundPreview extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        border: Border.all(color: const Color(0x66FFFFFF)),
+        border: Border.all(color: Brand.lineStrong),
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            Color(0xFF443F33),
-            Color(0xFF282318),
-            Color(0xFF37321F),
-            Color(0xFF1F1B13),
+            Brand.surfaceHover,
+            Brand.surfaceSunken,
+            Brand.surfaceRaised,
+            Brand.ink,
           ],
         ),
       ),
@@ -2276,7 +2426,7 @@ class _ForegroundPreview extends StatelessWidget {
             child: Icon(
               Icons.control_camera_outlined,
               size: 44,
-              color: Color(0xDDFFFFFF),
+              color: Brand.cream,
             ),
           ),
         ],
@@ -2313,9 +2463,9 @@ class _StatusBanner extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 16),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF241F16),
+          color: Brand.surfaceRaised,
           borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFF443F33)),
+          border: Border.all(color: Brand.lineStrong),
         ),
         child: Padding(
           padding: const EdgeInsets.all(12),
@@ -2330,9 +2480,4 @@ class _StatusBanner extends StatelessWidget {
       ),
     );
   }
-}
-
-String _formatNumber(num value) {
-  final text = value.toStringAsFixed(3);
-  return text.replaceFirst(RegExp(r'\.?0+$'), '');
 }

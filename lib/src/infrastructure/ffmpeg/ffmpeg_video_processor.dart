@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/ffmpeg_session.dart';
 
 import '../../domain/rendering/media_metadata.dart';
 import '../../domain/rendering/render_job.dart';
@@ -11,6 +13,7 @@ import 'ffmpeg_command_builder.dart';
 import 'ffmpeg_executables.dart';
 import 'ffmpeg_media_probe.dart';
 import 'ffmpeg_tool_validator.dart';
+import 'mobile_ffmpeg_arguments.dart';
 
 class FfmpegVideoProcessor implements VideoProcessor {
   const FfmpegVideoProcessor({
@@ -39,7 +42,11 @@ class FfmpegVideoProcessor implements VideoProcessor {
     _FfmpegRenderCancellation cancellation,
   ) async {
     try {
-      if (!Platform.isWindows && !Platform.isMacOS && !Platform.isLinux) {
+      if (!Platform.isWindows &&
+          !Platform.isMacOS &&
+          !Platform.isLinux &&
+          !Platform.isAndroid &&
+          !Platform.isIOS) {
         controller.add(
           const RenderProgress(
             status: RenderJobStatus.failed,
@@ -112,6 +119,17 @@ class FfmpegVideoProcessor implements VideoProcessor {
           message: 'Starting FFmpeg render.',
         ),
       );
+
+      if (Platform.isAndroid || Platform.isIOS) {
+        await _runMobile(
+          job,
+          MobileFfmpegArguments.adapt(args),
+          duration,
+          controller,
+          cancellation,
+        );
+        return;
+      }
 
       final process = await Process.start(FfmpegExecutables.ffmpeg, args);
       cancellation.attach(process);
@@ -195,6 +213,64 @@ class FfmpegVideoProcessor implements VideoProcessor {
     } finally {
       await controller.close();
     }
+  }
+
+  Future<void> _runMobile(
+    ShortsRenderJob job,
+    List<String> mobileArgs,
+    Duration? duration,
+    StreamController<RenderProgress> controller,
+    _FfmpegRenderCancellation cancellation,
+  ) async {
+    final completed = Completer<FFmpegSession>();
+    final session = await FFmpegKit.executeWithArgumentsAsync(
+      mobileArgs,
+      (session) {
+        if (!completed.isCompleted) completed.complete(session);
+      },
+      null,
+      (statistics) {
+        if (controller.isClosed || cancellation.isCanceled) return;
+        final totalMs = duration?.inMilliseconds ?? 0;
+        final fraction = totalMs <= 0
+            ? null
+            : (statistics.getTime() / totalMs).clamp(0.0, 0.99);
+        controller.add(
+          RenderProgress(
+            status: RenderJobStatus.running,
+            fraction: fraction,
+            message: 'Rendering video on this device.',
+          ),
+        );
+      },
+    );
+    cancellation.attachMobile(session.getSessionId());
+    if (cancellation.isCanceled) {
+      await session.cancel();
+    }
+    final result = await completed.future;
+    if (cancellation.isCanceled) {
+      await _deletePartialOutput(job.outputPath);
+      return;
+    }
+    final returnCode = await result.getReturnCode();
+    if (returnCode?.getValue() == 0) {
+      controller.add(
+        RenderProgress(
+          status: RenderJobStatus.completed,
+          fraction: 1,
+          message: 'Render complete.',
+          outputPath: job.outputPath,
+        ),
+      );
+      return;
+    }
+    controller.add(
+      RenderProgress(
+        status: RenderJobStatus.failed,
+        message: _failureMessage(await result.getAllLogsAsString() ?? ''),
+      ),
+    );
   }
 
   Future<MediaMetadata?> _probe(String inputPath) async {
@@ -283,14 +359,21 @@ class FfmpegVideoProcessor implements VideoProcessor {
 
 class _FfmpegRenderCancellation {
   Process? _process;
+  int? _mobileSessionId;
   bool isCanceled = false;
 
   void attach(Process process) {
     _process = process;
   }
 
+  void attachMobile(int? sessionId) {
+    _mobileSessionId = sessionId;
+  }
+
   void cancel() {
     isCanceled = true;
     _process?.kill();
+    final sessionId = _mobileSessionId;
+    if (sessionId != null) unawaited(FFmpegKit.cancel(sessionId));
   }
 }

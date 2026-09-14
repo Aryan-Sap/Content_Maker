@@ -10,7 +10,9 @@ This is the path we can build locally today.
 2. Make sure the Google OAuth consent screen lists every beta tester under
    **Test users** while the app remains in Testing mode.
 3. Bundle FFmpeg so users do not need a separate install.
-4. Build a Windows release:
+4. Add each Instagram beta account as an app tester in Meta when Instagram
+   connection is enabled.
+5. Build a Windows release:
 
    ```powershell
    .\tool\build_windows_release.ps1 -OAuthTarget youtube -CopyFfmpegFromPath
@@ -33,9 +35,11 @@ Before offering the app to arbitrary users:
    `https://www.googleapis.com/auth/youtube.upload`.
 3. Complete TikTok app review for Content Posting API access before enabling
    real TikTok posting for users.
-4. Sign the Windows installer with a trusted code-signing certificate, or publish
+4. Complete Meta App Review for Instagram professional accounts before making
+   Instagram Login public.
+5. Sign the Windows installer with a trusted code-signing certificate, or publish
    through the Microsoft Store.
-5. Include FFmpeg license notices for the exact FFmpeg build shipped with the
+6. Include FFmpeg license notices for the exact FFmpeg build shipped with the
    app.
 
 Until Google verification is complete, only configured Google test users can

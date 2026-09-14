@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["app/components/CreativeHome.tsx", "app/page.tsx", "app/layout.tsx", "app/privacy/page.tsx"],
+  "exclude": ["node_modules", "outputs", "work", "dist"]
+}

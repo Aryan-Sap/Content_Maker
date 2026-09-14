@@ -68,13 +68,88 @@ class _RecordingPublisher implements VideoPublisher {
   }
 }
 
+class _InstagramAuthenticator extends _FakeAuthenticator {
+  @override
+  PublishTarget get target => PublishTarget.instagramReel;
+}
+
+class _InstagramPublisher extends _RecordingPublisher {
+  @override
+  PublishTarget get target => PublishTarget.instagramReel;
+}
+
+class _FailingPublisher extends _RecordingPublisher {
+  @override
+  Stream<PublishProgress> publish(
+    PublishJob job,
+    OAuthCredentials credentials,
+  ) async* {
+    throw StateError('private internal failure details');
+  }
+}
+
 PublishJob _job() => const PublishJob(
   videoPath: 'out.mp4',
   target: PublishTarget.youtubeShort,
   metadata: PublishMetadata(title: 'Clip'),
 );
 
+PublishJob _instagramJob() => const PublishJob(
+  videoPath: 'out.mp4',
+  target: PublishTarget.instagramReel,
+  metadata: PublishMetadata(title: 'Clip'),
+);
+
 void main() {
+  test(
+    'concurrent destinations both finish without locking the merged stream',
+    () async {
+      final useCase = PublishExport(
+        publishers: {
+          PublishTarget.youtubeShort: _RecordingPublisher(),
+          PublishTarget.instagramReel: _InstagramPublisher(),
+        },
+        authenticators: {},
+        tokenStore: _FakeTokenStore(null),
+      );
+      final progress = await useCase([_job(), _instagramJob()]).toList();
+      expect(progress.where((p) => p.isSuccess).map((p) => p.target).toSet(), {
+        PublishTarget.youtubeShort,
+        PublishTarget.instagramReel,
+      });
+    },
+  );
+
+  test(
+    'one provider throwing does not prevent another from completing',
+    () async {
+      final useCase = PublishExport(
+        publishers: {
+          PublishTarget.youtubeShort: _FailingPublisher(),
+          PublishTarget.instagramReel: _InstagramPublisher(),
+        },
+        authenticators: {},
+        tokenStore: _FakeTokenStore(null),
+      );
+      final progress = await useCase([_job(), _instagramJob()]).toList();
+      expect(
+        progress
+            .singleWhere((p) => p.target == PublishTarget.youtubeShort)
+            .status,
+        PublishJobStatus.failed,
+      );
+      expect(
+        progress
+            .singleWhere((p) => p.target == PublishTarget.instagramReel)
+            .isSuccess,
+        isTrue,
+      );
+      expect(
+        progress.any((p) => p.message.contains('private internal')),
+        isFalse,
+      );
+    },
+  );
   test('refreshes expired credentials and passes the new token on', () async {
     final store = _FakeTokenStore(
       OAuthCredentials(
@@ -139,5 +214,22 @@ void main() {
     expect(auth.refreshCalled, isFalse);
     expect(auth.authorizeCalled, isFalse);
     expect(publisher.received?.accessToken, 'still-good');
+  });
+
+  test('manual Instagram hand-off does not force sign-in', () async {
+    final store = _FakeTokenStore(null);
+    final auth = _InstagramAuthenticator();
+    final publisher = _InstagramPublisher();
+
+    final useCase = PublishExport(
+      publishers: {PublishTarget.instagramReel: publisher},
+      authenticators: {PublishTarget.instagramReel: auth},
+      tokenStore: store,
+    );
+
+    await useCase([_instagramJob()]).toList();
+
+    expect(auth.authorizeCalled, isFalse);
+    expect(publisher.received?.accessToken, isEmpty);
   });
 }

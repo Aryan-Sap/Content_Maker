@@ -37,7 +37,24 @@ class PublishExport {
     StreamController<PublishProgress> controller,
   ) async {
     try {
-      await Future.wait(jobs.map((job) => _runOne(job, controller)));
+      await Future.wait(
+        jobs.map((job) async {
+          try {
+            await _runOne(job, controller);
+          } catch (_) {
+            if (!controller.isClosed) {
+              controller.add(
+                PublishProgress(
+                  target: job.target,
+                  status: PublishJobStatus.failed,
+                  message:
+                      'Upload interrupted. Check your connection and retry this destination.',
+                ),
+              );
+            }
+          }
+        }),
+      );
     } finally {
       await controller.close();
     }
@@ -91,15 +108,16 @@ class PublishExport {
       return;
     }
 
-    await controller.addStream(
-      publisher.publish(job, credentials),
-      cancelOnError: false,
-    );
+    // addStream locks a controller while it is forwarding, so concurrent
+    // destinations must forward individual events instead.
+    await for (final progress in publisher.publish(job, credentials)) {
+      emit(progress);
+    }
   }
 
   /// Returns valid credentials for [target], refreshing or authorizing as
-  /// needed and persisting any change. Targets without an authenticator
-  /// (Instagram) get an empty credential set.
+  /// needed and persisting any change. Manual hand-off targets never force an
+  /// interactive sign-in; they use a stored connection when one exists.
   Future<OAuthCredentials> _ensureCredentials(
     PublishTarget target,
     void Function(PublishProgress) emit,
@@ -110,6 +128,25 @@ class PublishExport {
     }
 
     final stored = await tokenStore.read(target);
+
+    if (!target.supportsAutomatedPublish) {
+      if (stored == null) {
+        return const OAuthCredentials(accessToken: '');
+      }
+      if (!stored.isExpired) {
+        return stored;
+      }
+      if (stored.canRefresh) {
+        try {
+          final refreshed = await authenticator.refresh(stored);
+          await tokenStore.write(target, refreshed);
+          return refreshed;
+        } on OAuthException {
+          return const OAuthCredentials(accessToken: '');
+        }
+      }
+      return const OAuthCredentials(accessToken: '');
+    }
 
     if (stored != null && !stored.isExpired) {
       return stored;

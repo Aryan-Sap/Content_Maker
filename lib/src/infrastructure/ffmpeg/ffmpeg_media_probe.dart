@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:ffmpeg_kit_flutter_new/ffprobe_kit.dart';
+import 'package:ffmpeg_kit_flutter_new/return_code.dart';
+
 import '../../domain/rendering/media_metadata.dart';
 import 'ffmpeg_executables.dart';
 
@@ -17,6 +20,23 @@ class FfmpegMediaProbe implements MediaProbe {
   }
 
   Future<MediaMetadata> _probe(String path) async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final session = await FFprobeKit.executeWithArguments(<String>[
+        '-v',
+        'error',
+        '-print_format',
+        'json',
+        '-show_format',
+        '-show_streams',
+        path,
+      ]);
+      final returnCode = await session.getReturnCode();
+      final output = await session.getOutput() ?? '';
+      if (!ReturnCode.isSuccess(returnCode)) {
+        throw StateError(_failureMessage('ffprobe', output));
+      }
+      return _metadataFromJson(path, output);
+    }
     final result = await Process.run(FfmpegExecutables.ffprobe, <String>[
       '-v',
       'error',
@@ -31,7 +51,11 @@ class FfmpegMediaProbe implements MediaProbe {
       throw StateError(_failureMessage('ffprobe', result.stderr));
     }
 
-    final decoded = jsonDecode('${result.stdout}') as Map<String, dynamic>;
+    return _metadataFromJson(path, '${result.stdout}');
+  }
+
+  MediaMetadata _metadataFromJson(String path, String json) {
+    final decoded = jsonDecode(json) as Map<String, dynamic>;
     final streams = (decoded['streams'] as List<dynamic>? ?? const [])
         .whereType<Map<String, dynamic>>()
         .toList();

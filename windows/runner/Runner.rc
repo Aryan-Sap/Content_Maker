@@ -90,12 +90,12 @@ BEGIN
         BLOCK "040904e4"
         BEGIN
             VALUE "CompanyName", "com.aryansaproo" "\0"
-            VALUE "FileDescription", "content_maker" "\0"
+            VALUE "FileDescription", "Content Maker" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
             VALUE "InternalName", "content_maker" "\0"
             VALUE "LegalCopyright", "Copyright (C) 2026 com.aryansaproo. All rights reserved." "\0"
             VALUE "OriginalFilename", "content_maker.exe" "\0"
-            VALUE "ProductName", "content_maker" "\0"
+            VALUE "ProductName", "Content Maker" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

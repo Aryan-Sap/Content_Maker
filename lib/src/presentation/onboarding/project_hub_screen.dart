@@ -3,12 +3,16 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../app/brand.dart';
+import '../../../theme/studio_theme.dart';
+import '../../../theme/editor_theme.dart';
+import '../publishing/accounts_dialog.dart';
+import '../widgets/studio_signature.dart';
 import '../../application/app_session_store.dart';
 import '../render_home_screen.dart';
 import 'guided_tour_overlay.dart';
 import 'login_screen.dart';
 
-/// After login: create a new project (choosing the Simple or Custom pipeline)
+/// After login: create a project in the Auto or Custom pipeline
 /// or reopen a recent one.
 class ProjectHubScreen extends StatefulWidget {
   const ProjectHubScreen({
@@ -37,7 +41,14 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
   List<UserProfile> _profiles = const [];
   List<ProjectSummary> _projects = const [];
   ProjectPipeline _pipeline = ProjectPipeline.simple;
-  bool _loading = true;
+  _LibraryPhase _phase = _LibraryPhase.loading;
+  bool _saving = false;
+  bool _showComposer = false;
+  String _query = '';
+  ProjectPipeline? _filter;
+  final _searchController = TextEditingController();
+  Timer? _skeletonTimer;
+  bool _showSkeleton = false;
   String? _error;
   bool _guidedTourActive = false;
   int _guidedTourStep = 0;
@@ -55,11 +66,18 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
   @override
   void initState() {
     super.initState();
+    _skeletonTimer = Timer(StudioTheme.loadingDelay, () {
+      if (mounted && _phase == _LibraryPhase.loading) {
+        setState(() => _showSkeleton = true);
+      }
+    });
     unawaited(_load());
   }
 
   @override
   void dispose() {
+    _skeletonTimer?.cancel();
+    _searchController.dispose();
     _nameController.dispose();
     super.dispose();
   }
@@ -73,16 +91,19 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
       setState(() {
         _profiles = session.profiles;
         _projects = session.projects;
-        _loading = false;
+        _phase = _LibraryPhase.ready;
+        _error = null;
         _guidedTourActive = widget.startGuidedTour;
+        _showComposer = _guidedTourActive;
       });
     } catch (error) {
       if (!mounted) {
         return;
       }
       setState(() {
-        _loading = false;
-        _error = 'Could not load projects: $error';
+        _phase = _LibraryPhase.failed;
+        _error =
+            'Your library could not be loaded. Check access to your app data folder and retry.';
       });
     }
   }
@@ -92,6 +113,7 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
   }
 
   Future<void> _createProject() async {
+    if (_saving) return;
     final launchGuidedTour = _guidedTourActive && _guidedTourStep == 2;
     final rawName = _nameController.text.trim();
     final name = rawName.isEmpty
@@ -107,17 +129,28 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
       lastOpenedAt: now,
     );
     setState(() {
-      _projects = [..._projects, project];
-      _nameController.clear();
+      _saving = true;
       _error = null;
     });
     try {
-      await _persist();
-    } catch (error) {
+      await _store.save(profiles: _profiles, projects: [..._projects, project]);
+    } catch (_) {
       if (mounted) {
-        setState(() => _error = 'Could not save the project: $error');
+        setState(() {
+          _error =
+              'Project could not be saved. Check disk access, then try again.';
+          _saving = false;
+        });
       }
+      return;
     }
+    if (!mounted) return;
+    setState(() {
+      _projects = [..._projects, project];
+      _nameController.clear();
+      _saving = false;
+      _showComposer = false;
+    });
     if (mounted) {
       if (launchGuidedTour) {
         setState(() => _guidedTourActive = false);
@@ -143,7 +176,18 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
       MaterialPageRoute<void>(
         builder: (_) => RenderHomeScreen(
           projectName: project.name,
-          initialPipeline: project.pipeline,
+          initialProjectPath: project.projectFilePath,
+          onProjectSaved: (path) async {
+            final updated = [
+              for (final p in _projects)
+                p.id == project.id ? p.copyWith(projectFilePath: path) : p,
+            ];
+            await _store.save(profiles: _profiles, projects: updated);
+            if (mounted) setState(() => _projects = updated);
+          },
+          initialPipeline: project.projectFilePath == null
+              ? project.pipeline
+              : ProjectPipeline.custom,
           guidedTour: guidedTour,
           onGuidedTourFinished: widget.onGuidedTourCompleted,
         ),
@@ -155,16 +199,67 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
   }
 
   Future<void> _deleteProject(ProjectSummary project) async {
-    setState(() {
-      _projects = _projects
-          .where((candidate) => candidate.id != project.id)
-          .toList();
-    });
+    if (_saving) return;
+    final messenger = ScaffoldMessenger.of(context);
+    final undoDuration = MediaQuery.accessibleNavigationOf(context)
+        ? StudioTheme.accessibleUndoDuration
+        : StudioTheme.undoDuration;
+    final previous = List<ProjectSummary>.of(_projects);
+    setState(() => _saving = true);
     try {
-      await _persist();
-    } catch (error) {
+      final remaining = _projects
+          .where((item) => item.id != project.id)
+          .toList();
+      await _store.save(profiles: _profiles, projects: remaining);
+      if (!mounted) return;
+      setState(() {
+        _projects = remaining;
+        _saving = false;
+      });
+      messenger.clearSnackBars();
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            'Removed “${project.name}” from the library. Media files are kept.',
+          ),
+          duration: undoDuration,
+          action: SnackBarAction(
+            label: 'Undo',
+            onPressed: () async {
+              if (_saving) return;
+              setState(() => _saving = true);
+              try {
+                final restored = [
+                  ..._projects,
+                  if (!_projects.any((p) => p.id == project.id)) project,
+                ];
+                await _store.save(profiles: _profiles, projects: restored);
+                if (mounted) {
+                  setState(() {
+                    _projects = restored;
+                    _saving = false;
+                  });
+                }
+              } catch (_) {
+                if (mounted) {
+                  setState(() {
+                    _saving = false;
+                    _error = 'Could not restore the project. Retry Undo.';
+                  });
+                }
+              }
+            },
+          ),
+        ),
+      );
+    } catch (_) {
       if (mounted) {
-        setState(() => _error = 'Could not delete the project: $error');
+        setState(() {
+          _projects = previous;
+          _saving = false;
+          _error =
+              'Could not remove the project. Check disk access and try again.';
+        });
       }
     }
   }
@@ -177,6 +272,7 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
 
   void _showTutorial() {
     setState(() {
+      _showComposer = true;
       _guidedTourActive = true;
       _guidedTourStep = 0;
       _nameController.clear();
@@ -203,7 +299,7 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
         description:
             'Type a name into the highlighted field. This project will be saved in your studio and used for the hands-on tour.',
         onSkip: _finishGuidedTour,
-        actionLabel: 'Next',
+        actionLabel: 'Project named — continue',
         onAction: _advanceGuidedTour,
       ),
       1 => GuidedTourOverlay(
@@ -231,842 +327,657 @@ class _ProjectHubScreenState extends State<ProjectHubScreen> {
   }
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final myProjects = _myProjects;
+  Widget build(BuildContext context) => Theme(
+    data: buildEditorTheme(),
+    child: Builder(builder: _buildWorkspace),
+  );
 
+  Widget _buildWorkspace(BuildContext context) {
+    final c = StudioTheme.of(context);
+    final wide = MediaQuery.sizeOf(context).width >= 1060;
+    final phone =
+        MediaQuery.sizeOf(context).width < StudioTheme.compactBreakpoint;
     return Stack(
       children: [
         Scaffold(
-          appBar: AppBar(
-            title: Row(
+          body: SafeArea(
+            child: Row(
               children: [
-                const BrandWordmark(size: 15),
-                const SizedBox(width: 14),
-                Flexible(
+                if (wide) _rail(context),
+                Expanded(
+                  child: Column(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 28,
+                          vertical: 16,
+                        ),
+                        decoration: BoxDecoration(
+                          border: Border(bottom: BorderSide(color: c.line)),
+                        ),
+                        child: Row(
+                          children: [
+                            if (!wide) ...[
+                              BrandLogo(
+                                size: 26,
+                                ringColor: c.accent,
+                                letterColor: c.ink,
+                              ),
+                              const SizedBox(width: 12),
+                            ],
+                            if (!phone) ...[
+                              Text(
+                                'Workspace',
+                                style: TextStyle(color: c.muted),
+                              ),
+                              const SizedBox(width: 12),
+                              Icon(
+                                Icons.chevron_right,
+                                size: 16,
+                                color: c.muted,
+                              ),
+                              const SizedBox(width: 12),
+                            ],
+                            const Text('Projects'),
+                            const Spacer(),
+                            if (!wide)
+                              IconButton(
+                                tooltip: 'Connected accounts',
+                                onPressed: () => AccountsDialog.show(context),
+                                icon: const Icon(Icons.link),
+                              ),
+                            if (!phone)
+                              Icon(
+                                Icons.computer_outlined,
+                                size: 16,
+                                color: c.muted,
+                              ),
+                            const SizedBox(width: 8),
+                            if (MediaQuery.sizeOf(context).width >= 800)
+                              Text(
+                                'Local workspace',
+                                style: TextStyle(color: c.muted),
+                              ),
+                          ],
+                        ),
+                      ),
+                      Expanded(
+                        child: switch (_phase) {
+                          _LibraryPhase.loading =>
+                            _showSkeleton
+                                ? _skeleton(context)
+                                : const SizedBox.expand(),
+                          _LibraryPhase.failed => Center(
+                            child: _message(
+                              context,
+                              Icons.folder_off_outlined,
+                              'Library unavailable',
+                              _error!,
+                              'Retry',
+                              _load,
+                            ),
+                          ),
+                          _LibraryPhase.ready => _library(context),
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_guidedTourActive && _phase == _LibraryPhase.ready)
+          _buildGuidedTour(),
+      ],
+    );
+  }
+
+  Widget _rail(BuildContext context) {
+    final c = StudioTheme.of(context);
+    return Container(
+      width: 248,
+      padding: const EdgeInsets.fromLTRB(18, 28, 18, 20),
+      decoration: BoxDecoration(
+        color: c.panel,
+        border: Border(right: BorderSide(color: c.line)),
+      ),
+      child: Material(
+        color: c.panel,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                BrandLogo(size: 32, ringColor: c.accent, letterColor: c.ink),
+                const SizedBox(width: 10),
+                Expanded(
                   child: Text(
-                    widget.profile.name,
+                    'Content Maker',
+                    maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
+                    style: TextStyle(
+                      fontFamily: StudioTheme.displayFont,
+                      fontWeight: FontWeight.w700,
+                      color: c.ink,
                     ),
                   ),
                 ),
               ],
             ),
-            actions: [
-              TextButton.icon(
-                onPressed: _showTutorial,
-                icon: const Icon(Icons.explore_outlined, size: 18),
-                label: const Text('Quick tour'),
+            const SizedBox(height: 42),
+            _eyebrow(context, 'YOUR STUDIO'),
+            const SizedBox(height: 14),
+            ListTile(
+              dense: true,
+              selected: true,
+              selectedColor: c.accent,
+              selectedTileColor: c.selection,
+              shape: const RoundedRectangleBorder(
+                borderRadius: StudioTheme.controlRadius,
               ),
-              TextButton.icon(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('Projects'),
+              trailing: Text('${_myProjects.length}'),
+              onTap: () => setState(() {
+                _filter = null;
+                _query = '';
+                _searchController.clear();
+              }),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.link),
+              title: const Text('Connected accounts'),
+              onTap: () => AccountsDialog.show(context),
+            ),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.help_outline),
+              title: const Text('Guided walkthrough'),
+              onTap: _showTutorial,
+            ),
+            const Spacer(),
+            if (MediaQuery.sizeOf(context).height >= 820)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: c.canvas,
+                  borderRadius: StudioTheme.panelRadius,
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.lock_outline, color: c.accent, size: 20),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Your footage. Your device.',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Editing and rendering happen locally. Connect a channel when you are ready to publish.',
+                      style: TextStyle(color: c.muted, height: 1.6),
+                    ),
+                  ],
+                ),
+              ),
+            const SizedBox(height: 24),
+            const Divider(),
+            const SizedBox(height: 8),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: CircleAvatar(
+                backgroundColor: c.selection,
+                child: Text(
+                  widget.profile.name.isEmpty
+                      ? 'C'
+                      : widget.profile.name[0].toUpperCase(),
+                  style: TextStyle(color: c.accent),
+                ),
+              ),
+              title: Text(widget.profile.name, overflow: TextOverflow.ellipsis),
+              subtitle: const Text('Local profile'),
+              trailing: IconButton(
+                tooltip: 'Switch profile',
                 onPressed: _signOut,
-                icon: const Icon(Icons.logout_outlined, size: 18),
-                label: const Text('Sign out'),
+                icon: const Icon(Icons.logout, size: 18),
               ),
-              const SizedBox(width: 8),
-            ],
-          ),
-          body: _loading
-              ? const Center(child: CircularProgressIndicator())
-              : _buildStudio(context, myProjects),
+            ),
+          ],
         ),
-        if (_guidedTourActive && !_loading) _buildGuidedTour(),
-      ],
+      ),
     );
   }
 
-  Widget _buildStudio(BuildContext context, List<ProjectSummary> myProjects) {
-    final theme = Theme.of(context);
+  Widget _library(BuildContext context) {
+    final c = StudioTheme.of(context);
+    final phone =
+        MediaQuery.sizeOf(context).width < StudioTheme.compactBreakpoint;
+    final projects = _myProjects
+        .where(
+          (p) =>
+              (_filter == null || p.pipeline == _filter) &&
+              p.name.toLowerCase().contains(_query.toLowerCase()),
+        )
+        .toList();
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(28, 24, 28, 40),
-      child: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 1160),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              BrandEntrance(
-                child: _StudioHero(
-                  creatorName: widget.profile.name,
-                  projectCount: myProjects.length,
-                ),
-              ),
-              const SizedBox(height: 22),
-              BrandEntrance(
-                delay: const Duration(milliseconds: 80),
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final wide = constraints.maxWidth >= 900;
-                    final composer = _buildProjectComposer(context);
-                    const map = _WorkflowMap();
-                    return wide
-                        ? Row(
-                            children: [
-                              Expanded(flex: 7, child: composer),
-                              const SizedBox(width: 18),
-                              const Expanded(flex: 3, child: map),
-                            ],
-                          )
-                        : Column(
-                            children: [
-                              composer,
-                              const SizedBox(height: 18),
-                              map,
-                            ],
-                          );
-                  },
-                ),
-              ),
-              const SizedBox(height: 28),
-              Row(
-                children: [
-                  Text('Your projects', style: theme.textTheme.titleLarge),
-                  const SizedBox(width: 10),
-                  _CountBadge(count: myProjects.length),
-                  const Spacer(),
-                  Text(
-                    'Saved locally on this device',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: Brand.faint,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 12),
-              if (myProjects.isEmpty)
-                const _EmptyProjectShelf()
-              else
-                for (var i = 0; i < myProjects.length; i++)
-                  BrandEntrance(
-                    delay: Duration(milliseconds: 130 + i * 45),
-                    child: Padding(
-                      padding: const EdgeInsets.only(bottom: 9),
-                      child: _ProjectTile(
-                        project: myProjects[i],
-                        onOpen: () => _openProject(myProjects[i]),
-                        onDelete: () => _deleteProject(myProjects[i]),
-                      ),
-                    ),
-                  ),
-              if (_error != null) ...[
-                const SizedBox(height: 10),
-                Text(
-                  _error!,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.error,
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProjectComposer(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: Brand.surface,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Brand.lineStrong),
-      ),
-      padding: const EdgeInsets.all(24),
+      padding: EdgeInsets.all(phone ? StudioTheme.compactPagePadding : 32),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
+          Flex(
+            direction: phone ? Axis.vertical : Axis.horizontal,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  color: Brand.lime,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: const Icon(Icons.add, color: Brand.ink),
-              ),
-              const SizedBox(width: 12),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Create something new',
-                    style: theme.textTheme.titleLarge,
-                  ),
-                  Text(
-                    'Name the idea, then choose how hands-on you want to be.',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: Brand.muted,
+              Flexible(
+                flex: phone ? 0 : 1,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Every frame,\nyour point of view.',
+                      style: TextStyle(
+                        fontFamily: StudioTheme.displayFont,
+                        fontSize: StudioTheme.titleSize,
+                        fontWeight: FontWeight.w700,
+                        color: c.ink,
+                        height: 1.1,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 8),
+                    Text(
+                      'Pick up an edit, or give your next idea a place to start.',
+                      style: TextStyle(color: c.muted),
+                    ),
+                  ],
+                ),
+              ),
+              if (MediaQuery.sizeOf(context).width >= 1200) ...[
+                const SizedBox(width: 40),
+                const SizedBox(width: 310, child: StudioSignature()),
+              ],
+              SizedBox(width: phone ? 0 : 16, height: phone ? 20 : 0),
+              FilledButton.icon(
+                onPressed: () => setState(() => _showComposer = !_showComposer),
+                icon: Icon(_showComposer ? Icons.close : Icons.add),
+                label: Text(_showComposer ? 'Close' : 'New project'),
               ),
             ],
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 28),
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                'Your projects',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              if (MediaQuery.sizeOf(context).width < 1060)
+                TextButton.icon(
+                  onPressed: _signOut,
+                  icon: const Icon(Icons.person_outline),
+                  label: const Text('Switch profile'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (_showComposer) ...[
+            _composer(context),
+            const SizedBox(height: 28),
+          ],
+          if (_error != null) ...[
+            Semantics(
+              liveRegion: true,
+              child: MaterialBanner(
+                backgroundColor: c.panel,
+                leading: Icon(Icons.error_outline, color: c.danger),
+                content: Text(_error!),
+                actions: [
+                  TextButton(
+                    onPressed: () => setState(() => _error = null),
+                    child: const Text('Dismiss'),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+          ],
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              for (final choice in <ProjectPipeline?>[
+                null,
+                ...ProjectPipeline.values,
+              ])
+                ChoiceChip(
+                  label: Text(
+                    choice == null
+                        ? 'All projects'
+                        : choice == ProjectPipeline.simple
+                        ? 'Auto Render'
+                        : 'Custom Timeline',
+                  ),
+                  selected: _filter == choice,
+                  onSelected: (_) => setState(() => _filter = choice),
+                ),
+              SizedBox(
+                width: phone
+                    ? MediaQuery.sizeOf(context).width -
+                          (StudioTheme.compactPagePadding * 2)
+                    : 260,
+                child: TextField(
+                  controller: _searchController,
+                  onChanged: (value) => setState(() => _query = value),
+                  decoration: const InputDecoration(
+                    hintText: 'Search projects',
+                    prefixIcon: Icon(Icons.search),
+                    isDense: true,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 22),
+          Container(
+            decoration: BoxDecoration(
+              color: c.panel,
+              border: Border.all(color: c.line),
+              borderRadius: StudioTheme.panelRadius,
+            ),
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 22,
+                    vertical: 16,
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(child: _eyebrow(context, 'PROJECT / WORKFLOW')),
+                      if (MediaQuery.sizeOf(context).width > 700)
+                        _eyebrow(context, 'LAST OPENED'),
+                      if (!phone) const SizedBox(width: 100),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                if (projects.isEmpty)
+                  Padding(
+                    padding: EdgeInsets.all(
+                      phone ? StudioTheme.compactPagePadding : 36,
+                    ),
+                    child: _message(
+                      context,
+                      _myProjects.isEmpty
+                          ? Icons.video_collection_outlined
+                          : Icons.search_off,
+                      _myProjects.isEmpty
+                          ? 'Your next edit starts here'
+                          : 'No matching projects',
+                      _myProjects.isEmpty
+                          ? 'Create a project to format a clip or build a full timeline.'
+                          : 'Try another name or clear your filters.',
+                      _myProjects.isEmpty
+                          ? 'Create a project'
+                          : 'Clear filters',
+                      () => setState(() {
+                        if (_myProjects.isEmpty) {
+                          _showComposer = true;
+                        } else {
+                          _filter = null;
+                          _query = '';
+                          _searchController.clear();
+                        }
+                      }),
+                    ),
+                  )
+                else
+                  for (final project in projects) _projectRow(context, project),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          Semantics(
+            liveRegion: true,
+            child: Text(
+              '${projects.length} ${projects.length == 1 ? 'project' : 'projects'} · Media files stay in their original location',
+              style: TextStyle(color: c.muted),
+            ),
+          ),
+          const SizedBox(height: 34),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.subdirectory_arrow_right, size: 20, color: c.accent),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'A simple path to a finished video: import footage → edit → render → publish.\nAuto Render formats clips quickly. Custom Timeline gives you control over every layer.',
+                  style: TextStyle(color: c.muted, height: 1.8),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _composer(BuildContext context) {
+    final c = StudioTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: c.panel,
+        border: Border.all(color: c.line),
+        borderRadius: StudioTheme.panelRadius,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('New project', style: Theme.of(context).textTheme.titleLarge),
+          const SizedBox(height: 18),
           TextField(
             key: _projectNameTourKey,
             controller: _nameController,
             decoration: const InputDecoration(
               labelText: 'Project name',
-              hintText: 'e.g. Ranked clutch · Episode 04',
-              prefixIcon: Icon(Icons.edit_note_outlined),
+              hintText: 'e.g. Weekend highlights',
             ),
             onSubmitted: (_) {
-              if (_guidedTourActive && _guidedTourStep == 0) {
-                if (_nameController.text.trim().isNotEmpty) {
-                  _advanceGuidedTour();
-                }
-                return;
-              }
-              _createProject();
+              if (!_guidedTourActive) _createProject();
             },
-            onChanged: (_) {
-              if (_guidedTourActive && _guidedTourStep == 0) setState(() {});
-            },
+            onChanged: (_) => setState(() {}),
           ),
           const SizedBox(height: 18),
-          Text(
-            'CHOOSE YOUR EDITING METHOD',
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: Brand.faint,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.25,
-            ),
-          ),
-          const SizedBox(height: 10),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final wide = constraints.maxWidth >= 620;
-              final cards = [
-                KeyedSubtree(
-                  key: _autoPipelineTourKey,
-                  child: _PipelineCard(
-                    title: 'Auto Render',
-                    tag: 'FASTEST',
-                    subtitle:
-                        'Turn gameplay into a polished Short in one guided pass.',
-                    steps: const ['Import', 'Style', 'Render'],
-                    accent: Brand.lime,
-                    icon: Icons.auto_awesome_outlined,
-                    selected: _pipeline == ProjectPipeline.simple,
-                    onTap: () {
-                      setState(() => _pipeline = ProjectPipeline.simple);
-                      if (_guidedTourActive && _guidedTourStep == 1) {
-                        _advanceGuidedTour();
-                      }
-                    },
+          for (final pipeline in ProjectPipeline.values)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Material(
+                color: _pipeline == pipeline ? c.selection : c.canvas,
+                shape: RoundedRectangleBorder(
+                  borderRadius: StudioTheme.controlRadius,
+                  side: BorderSide(
+                    color: _pipeline == pipeline ? c.accent : c.line,
                   ),
                 ),
-                _PipelineCard(
-                  title: 'Custom Timeline',
-                  tag: 'FULL CONTROL',
-                  subtitle:
-                      'Build a layered edit with precision tools and a live preview.',
-                  steps: const ['Arrange', 'Polish', 'Export'],
-                  accent: Brand.blue,
-                  icon: Icons.timeline_outlined,
-                  selected: _pipeline == ProjectPipeline.custom,
-                  onTap: () =>
-                      setState(() => _pipeline = ProjectPipeline.custom),
+                child: ListTile(
+                  key: pipeline == ProjectPipeline.simple
+                      ? _autoPipelineTourKey
+                      : null,
+                  leading: Icon(
+                    pipeline == ProjectPipeline.simple
+                        ? Icons.auto_fix_high_outlined
+                        : Icons.view_timeline_outlined,
+                  ),
+                  title: Text(
+                    pipeline == ProjectPipeline.simple
+                        ? 'Auto Render'
+                        : 'Custom Timeline',
+                  ),
+                  subtitle: Text(
+                    pipeline == ProjectPipeline.simple
+                        ? 'Format, style and export a clip in a guided workflow.'
+                        : 'Arrange video, audio and text on a multi-track timeline.',
+                  ),
+                  trailing: Icon(
+                    _pipeline == pipeline
+                        ? Icons.check_circle
+                        : Icons.circle_outlined,
+                  ),
+                  onTap: () {
+                    setState(() => _pipeline = pipeline);
+                    if (_guidedTourActive && _guidedTourStep == 1) {
+                      _advanceGuidedTour();
+                    }
+                  },
                 ),
-              ];
-              return wide
-                  ? Row(
-                      children: [
-                        Expanded(child: cards[0]),
-                        const SizedBox(width: 12),
-                        Expanded(child: cards[1]),
-                      ],
-                    )
-                  : Column(
-                      children: [
-                        cards[0],
-                        const SizedBox(height: 12),
-                        cards[1],
-                      ],
-                    );
-            },
-          ),
-          const SizedBox(height: 18),
-          SizedBox(
-            height: 48,
+              ),
+            ),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerRight,
             child: FilledButton.icon(
               key: _startProjectTourKey,
-              onPressed: _createProject,
-              icon: Icon(
-                _pipeline == ProjectPipeline.simple
-                    ? Icons.bolt
-                    : Icons.movie_creation_outlined,
-              ),
-              label: Text(
-                _pipeline == ProjectPipeline.simple
-                    ? 'Start an Auto Render project'
-                    : 'Open a Custom Timeline',
-              ),
+              onPressed: _saving ? null : _createProject,
+              icon: const Icon(Icons.arrow_forward),
+              label: Text(_saving ? 'Saving project…' : 'Create project'),
             ),
           ),
         ],
       ),
     );
   }
-}
 
-class _StudioHero extends StatelessWidget {
-  const _StudioHero({required this.creatorName, required this.projectCount});
-
-  final String creatorName;
-  final int projectCount;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final firstName = creatorName.trim().split(' ').first;
-    return Container(
-      decoration: BoxDecoration(
-        color: Brand.blue,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Brand.blueSoft),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: Stack(
-        children: [
-          Positioned(
-            right: -70,
-            top: -90,
-            child: Container(
-              width: 280,
-              height: 280,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: Brand.cream.withValues(alpha: 0.22),
-                  width: 2,
-                ),
-              ),
+  Widget _projectRow(BuildContext context, ProjectSummary project) {
+    final c = StudioTheme.of(context);
+    final phone = MediaQuery.sizeOf(context).width < 600;
+    final date = project.lastOpenedAt;
+    return Column(
+      children: [
+        InkWell(
+          onTap: _saving ? null : () => _openProject(project),
+          child: Padding(
+            padding: EdgeInsets.symmetric(
+              horizontal: phone ? 12 : 22,
+              vertical: 20,
             ),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 26),
             child: Row(
               children: [
+                Container(
+                  width: phone ? 40 : 58,
+                  height: 52,
+                  decoration: BoxDecoration(
+                    color: c.inset,
+                    borderRadius: StudioTheme.controlRadius,
+                  ),
+                  child: Icon(
+                    project.pipeline == ProjectPipeline.simple
+                        ? Icons.movie_outlined
+                        : Icons.view_timeline_outlined,
+                    color: c.accent,
+                  ),
+                ),
+                const SizedBox(width: 16),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        'WELCOME TO THE STUDIO, ${firstName.toUpperCase()}',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: const Color(0xFFDFE4FF),
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.4,
-                        ),
+                        project.name,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      const SizedBox(height: 8),
+                      const SizedBox(height: 6),
                       Text(
-                        'What are we making today?',
-                        style: theme.textTheme.headlineLarge?.copyWith(
-                          color: Brand.cream,
-                          fontSize: 34,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Start fast with Auto Render or take the controls in the Custom Timeline.',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: const Color(0xFFDFE4FF),
-                        ),
+                        project.pipeline == ProjectPipeline.simple
+                            ? 'Auto Render'
+                            : 'Custom Timeline',
+                        style: TextStyle(color: c.muted),
                       ),
                     ],
                   ),
                 ),
-                const SizedBox(width: 24),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 14,
+                if (MediaQuery.sizeOf(context).width > 700)
+                  Text(
+                    '${date.day}/${date.month}/${date.year}',
+                    style: TextStyle(color: c.muted),
                   ),
-                  decoration: BoxDecoration(
-                    color: Brand.ink.withValues(alpha: 0.86),
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(
-                      color: Brand.cream.withValues(alpha: 0.18),
-                    ),
+                const SizedBox(width: 16),
+                if (!phone)
+                  IconButton(
+                    tooltip: 'Open ${project.name}',
+                    onPressed: _saving ? null : () => _openProject(project),
+                    icon: const Icon(Icons.arrow_outward, size: 20),
                   ),
-                  child: Column(
-                    children: [
-                      Text(
-                        '$projectCount',
-                        style: theme.textTheme.headlineLarge?.copyWith(
-                          color: Brand.lime,
-                          height: 1,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        projectCount == 1 ? 'PROJECT' : 'PROJECTS',
-                        style: const TextStyle(
-                          color: Brand.muted,
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.2,
-                        ),
-                      ),
-                    ],
-                  ),
+                IconButton(
+                  tooltip: 'Remove ${project.name} from library',
+                  onPressed: _saving ? null : () => _deleteProject(project),
+                  icon: Icon(Icons.close, size: 18, color: c.muted),
                 ),
               ],
             ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _WorkflowMap extends StatelessWidget {
-  const _WorkflowMap();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      decoration: BoxDecoration(
-        color: Brand.ink,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: Brand.lineStrong),
-      ),
-      padding: const EdgeInsets.all(22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const BrandSticker(label: 'ONE APP · TWO PATHS', rotationDegrees: -2),
-          const SizedBox(height: 20),
-          Text('From raw clip to ready.', style: theme.textTheme.titleLarge),
-          const SizedBox(height: 7),
-          Text(
-            'Every project follows the same creative rhythm. You choose how much control each step needs.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: Brand.muted,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 22),
-          const _MapStep(
-            number: '01',
-            title: 'EDIT',
-            detail: 'Auto or timeline',
-          ),
-          const _MapConnector(),
-          const _MapStep(
-            number: '02',
-            title: 'RENDER',
-            detail: 'Local · 60 fps',
-          ),
-          const _MapConnector(),
-          const _MapStep(
-            number: '03',
-            title: 'PUBLISH',
-            detail: 'One connected flow',
-          ),
-          const SizedBox(height: 24),
-          const Text(
-            'TIP · You can switch editing methods inside a project.',
-            style: TextStyle(
-              color: Brand.blueSoft,
-              fontSize: 10,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.8,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MapStep extends StatelessWidget {
-  const _MapStep({
-    required this.number,
-    required this.title,
-    required this.detail,
-  });
-
-  final String number;
-  final String title;
-  final String detail;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        CircleAvatar(
-          radius: 18,
-          backgroundColor: Brand.lime,
-          foregroundColor: Brand.ink,
-          child: Text(
-            number,
-            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 11),
-          ),
         ),
-        const SizedBox(width: 12),
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontFamily: Brand.displayFont,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1,
-              ),
-            ),
-            Text(
-              detail,
-              style: const TextStyle(color: Brand.faint, fontSize: 11),
-            ),
-          ],
-        ),
+        const Divider(height: 1),
       ],
     );
   }
-}
 
-class _MapConnector extends StatelessWidget {
-  const _MapConnector();
+  Widget _eyebrow(BuildContext context, String text) => Text(
+    text,
+    style: TextStyle(
+      color: StudioTheme.of(context).muted,
+      fontSize: StudioTheme.eyebrowSize,
+      fontWeight: FontWeight.w600,
+      letterSpacing: 1.1,
+    ),
+  );
 
-  @override
-  Widget build(BuildContext context) {
-    return const Padding(
-      padding: EdgeInsets.only(left: 17, top: 5, bottom: 5),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: SizedBox(
-          width: 2,
-          height: 15,
-          child: ColoredBox(color: Brand.lineStrong),
-        ),
+  Widget _message(
+    BuildContext context,
+    IconData icon,
+    String title,
+    String detail,
+    String action,
+    VoidCallback onAction,
+  ) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 38, color: StudioTheme.of(context).accent),
+      const SizedBox(height: 16),
+      Text(title, style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 8),
+      Text(
+        detail,
+        textAlign: TextAlign.center,
+        style: TextStyle(color: StudioTheme.of(context).muted),
       ),
-    );
-  }
-}
+      const SizedBox(height: 20),
+      OutlinedButton(onPressed: onAction, child: Text(action)),
+    ],
+  );
 
-class _CountBadge extends StatelessWidget {
-  const _CountBadge({required this.count});
-
-  final int count;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-      decoration: BoxDecoration(
-        color: Brand.lime,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(
-        '$count',
-        style: const TextStyle(
-          color: Brand.ink,
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
-        ),
-      ),
-    );
-  }
-}
-
-class _EmptyProjectShelf extends StatelessWidget {
-  const _EmptyProjectShelf();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
-      decoration: BoxDecoration(
-        color: Brand.surfaceSunken,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Brand.line),
-      ),
-      child: Row(
+  Widget _skeleton(BuildContext context) => Semantics(
+    label: 'Loading projects',
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
         children: [
-          const BrandLogo(size: 46, ringColor: Brand.blueSoft),
-          const SizedBox(width: 15),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Your first timeline starts above.',
-                  style: theme.textTheme.titleMedium,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Give the idea a name, choose a method, and Content Maker will open the right workspace.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: Brand.muted,
-                  ),
-                ),
-              ],
+          for (var i = 0; i < 4; i++)
+            Container(
+              height: i == 0 ? 90 : 72,
+              margin: const EdgeInsets.only(bottom: 18),
+              color: StudioTheme.of(context).inset,
             ),
-          ),
         ],
       ),
-    );
-  }
+    ),
+  );
 }
 
-class _PipelineCard extends StatefulWidget {
-  const _PipelineCard({
-    required this.title,
-    required this.tag,
-    required this.subtitle,
-    required this.steps,
-    required this.accent,
-    required this.icon,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final String title;
-  final String tag;
-  final String subtitle;
-  final List<String> steps;
-  final Color accent;
-  final IconData icon;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  State<_PipelineCard> createState() => _PipelineCardState();
-}
-
-class _PipelineCardState extends State<_PipelineCard> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final selected = widget.selected;
-    final borderColor = selected
-        ? widget.accent
-        : _hovered
-        ? theme.colorScheme.outline
-        : theme.colorScheme.outlineVariant;
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: AnimatedScale(
-        scale: _hovered ? 1.012 : 1,
-        duration: const Duration(milliseconds: 140),
-        curve: Curves.easeOut,
-        child: Material(
-          color: selected
-              ? widget.accent.withValues(alpha: 0.09)
-              : Brand.surfaceSunken,
-          borderRadius: BorderRadius.circular(14),
-          child: InkWell(
-            borderRadius: BorderRadius.circular(14),
-            onTap: widget.onTap,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 140),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: borderColor,
-                  width: selected ? 1.7 : 1,
-                ),
-              ),
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 39,
-                        height: 39,
-                        decoration: BoxDecoration(
-                          color: widget.accent,
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        child: Icon(widget.icon, size: 22, color: Brand.ink),
-                      ),
-                      const SizedBox(width: 11),
-                      Expanded(
-                        child: Text(
-                          widget.title,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: selected ? widget.accent : Brand.line,
-                          borderRadius: BorderRadius.circular(5),
-                        ),
-                        child: Text(
-                          selected ? 'SELECTED' : widget.tag,
-                          style: TextStyle(
-                            color: selected ? Brand.ink : Brand.muted,
-                            fontSize: 9,
-                            fontWeight: FontWeight.w800,
-                            letterSpacing: 0.7,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    widget.subtitle,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: Brand.muted,
-                      height: 1.4,
-                    ),
-                  ),
-                  const SizedBox(height: 14),
-                  Wrap(
-                    spacing: 6,
-                    runSpacing: 6,
-                    children: [
-                      for (var i = 0; i < widget.steps.length; i++)
-                        _PipelineStepChip(
-                          number: i + 1,
-                          label: widget.steps[i],
-                          color: widget.accent,
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PipelineStepChip extends StatelessWidget {
-  const _PipelineStepChip({
-    required this.number,
-    required this.label,
-    required this.color,
-  });
-
-  final int number;
-  final String label;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(
-        color: Brand.ink,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: Brand.line),
-      ),
-      child: Text(
-        '$number  $label',
-        style: TextStyle(
-          color: color,
-          fontSize: 10,
-          fontWeight: FontWeight.w700,
-        ),
-      ),
-    );
-  }
-}
-
-class _ProjectTile extends StatelessWidget {
-  const _ProjectTile({
-    required this.project,
-    required this.onOpen,
-    required this.onDelete,
-  });
-
-  final ProjectSummary project;
-  final VoidCallback onOpen;
-  final VoidCallback onDelete;
-
-  String _relativeTime(DateTime time) {
-    final difference = DateTime.now().difference(time);
-    if (difference.inMinutes < 1) {
-      return 'just now';
-    }
-    if (difference.inHours < 1) {
-      return '${difference.inMinutes} min ago';
-    }
-    if (difference.inDays < 1) {
-      return '${difference.inHours} h ago';
-    }
-    return '${difference.inDays} d ago';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final isSimple = project.pipeline == ProjectPipeline.simple;
-
-    return Material(
-      color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.25),
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: onOpen,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-          child: Row(
-            children: [
-              Icon(
-                isSimple
-                    ? Icons.auto_awesome_outlined
-                    : Icons.timeline_outlined,
-                size: 22,
-                color: theme.colorScheme.primary,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      project.name,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                    Text(
-                      '${project.pipeline.label} · opened '
-                      '${_relativeTime(project.lastOpenedAt)}',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              IconButton(
-                tooltip: 'Delete project',
-                onPressed: onDelete,
-                icon: const Icon(Icons.delete_outline, size: 20),
-              ),
-              const Icon(Icons.chevron_right_outlined),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
+enum _LibraryPhase { loading, ready, failed }

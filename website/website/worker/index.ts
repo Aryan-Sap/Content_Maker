@@ -64,7 +64,7 @@ async function handleReleaseUpload(request: Request, env: Env): Promise<Response
         contentDisposition: 'attachment; filename="ContentMakerSetup.exe"',
       },
       customMetadata: {
-        version: "1.0.0",
+        version: "1.1.0",
         platform: "windows-x64",
         package: "installer",
       },

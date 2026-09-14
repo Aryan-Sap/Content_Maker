@@ -1,28 +1,223 @@
-* {
+@import "tailwindcss";
+
+/* Shared light theme and privacy page foundation. */
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-bg-deep: var(--bg-deep);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-deep: var(--accent-deep);
+  --color-on-accent: var(--on-accent);
+
+  --font-display: var(--font-geist), "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: var(--font-geist), "Geist", ui-sans-serif, system-ui, sans-serif;
+
+  --radius-panel: 16px;
+  --radius-control: 10px;
+}
+
+:root {
+  color-scheme: light;
+  --bg: #f8f7f2;
+  --bg-deep: #efefe6;
+  --surface: #ffffff;
+  --raised: #ffffff;
+  --line: #dedfd5;
+  --line-strong: #c5c9bc;
+  --text: #252a27;
+  --muted: #656b61;
+  --faint: #767d70;
+  --accent: #b74429;
+  --accent-deep: #8c321f;
+  --on-accent: #ffffff;
+  --shadow-panel: 0 20px 44px rgb(37 42 39 / 6%);
+}
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 88px;
+  -webkit-text-size-adjust: 100%;
 }
 
 html,
 body {
-  width: 100%;
-  min-height: 100%;
-  margin: 0;
-  background: #faf7f1;
+  max-width: 100%;
+  overflow-x: clip;
 }
 
 body {
-  overflow: hidden;
-}
-
-.site-shell,
-.site-frame {
-  width: 100%;
-  height: 100dvh;
   margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
-.site-frame {
-  display: block;
-  border: 0;
-  background: #faf7f1;
+::selection {
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.035em;
+  line-height: 1.02;
+  margin: 0;
+  text-wrap: balance;
+}
+
+p {
+  margin: 0;
+  text-wrap: pretty;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Scroll reveal. Driven by IntersectionObserver in Reveal.tsx, which
+   sets data-shown once. Everything is transform + opacity only. */
+[data-reveal] {
+  opacity: 0;
+  transform: translate3d(0, 18px, 0);
+  transition:
+    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+  transition-delay: var(--reveal-delay, 0ms);
+  will-change: transform, opacity;
+}
+
+[data-reveal][data-shown="true"] {
+  opacity: 1;
+  transform: none;
+}
+
+@keyframes cm-marquee {
+  to {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+.cm-marquee-track {
+  animation: cm-marquee 42s linear infinite;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  [data-reveal] {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+
+  .cm-marquee-track {
+    animation: none;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ---------------------------------------------------------------
+   Privacy policy. Legal copy is untouched; only the surface is
+   re-themed onto the product tokens above.
+   --------------------------------------------------------------- */
+
+.privacy-page {
+  min-height: 100dvh;
+  padding: 56px 24px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.privacy-card {
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: clamp(28px, 6vw, 56px);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.privacy-back,
+.privacy-card a {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.privacy-back {
+  display: inline-block;
+  margin-bottom: 36px;
+  text-decoration: none;
+}
+
+.privacy-eyebrow {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+}
+
+.privacy-card h1 {
+  margin: 8px 0 4px;
+  font-size: clamp(34px, 7vw, 52px);
+}
+
+.privacy-updated {
+  margin: 0 0 36px;
+  color: var(--faint);
+  font-size: 14px;
+}
+
+.privacy-card h2 {
+  margin: 36px 0 10px;
+  font-size: 20px;
+}
+
+.privacy-card p {
+  margin: 0 0 16px;
+  color: var(--muted);
+}
+
+@media (max-width: 560px) {
+  .privacy-page {
+    padding: 24px 14px;
+  }
 }

@@ -11,7 +11,10 @@ class AccountsDialog extends StatefulWidget {
 
   final PublishingRegistry? registry;
 
-  static Future<void> show(BuildContext context, {PublishingRegistry? registry}) {
+  static Future<void> show(
+    BuildContext context, {
+    PublishingRegistry? registry,
+  }) {
     return showDialog<void>(
       context: context,
       builder: (_) => AccountsDialog(registry: registry),
@@ -24,16 +27,18 @@ class AccountsDialog extends StatefulWidget {
 
 class _AccountsDialogState extends State<AccountsDialog> {
   late final ManageAccounts _accounts;
+  late final Set<PublishTarget> _configured;
+  String? _error;
   final Map<PublishTarget, bool> _connected = {};
   final Set<PublishTarget> _busy = {};
 
-  /// Only OAuth-capable targets can be connected here.
-  static const _targets = [PublishTarget.youtubeShort, PublishTarget.tiktok];
+  static const _targets = PublishTarget.values;
 
   @override
   void initState() {
     super.initState();
     final registry = widget.registry ?? PublishingRegistry();
+    _configured = registry.configuredTargets;
     _accounts = ManageAccounts(
       authenticators: registry.authenticators,
       tokenStore: registry.tokenStore,
@@ -43,7 +48,15 @@ class _AccountsDialogState extends State<AccountsDialog> {
 
   Future<void> _refresh() async {
     for (final target in _targets) {
-      final connected = await _accounts.isConnected(target);
+      bool connected;
+      try {
+        connected = await _accounts.isConnected(target);
+      } catch (_) {
+        _notify(
+          'Account status could not be read. Close this panel and retry.',
+        );
+        continue;
+      }
       if (!mounted) {
         return;
       }
@@ -60,8 +73,10 @@ class _AccountsDialogState extends State<AccountsDialog> {
       }
     } on OAuthException catch (error) {
       _notify(error.message);
-    } catch (error) {
-      _notify('$error');
+    } catch (_) {
+      _notify(
+        'Could not connect this channel. Check your connection and try again.',
+      );
     } finally {
       if (mounted) {
         setState(() => _busy.remove(target));
@@ -70,7 +85,12 @@ class _AccountsDialogState extends State<AccountsDialog> {
   }
 
   Future<void> _disconnect(PublishTarget target) async {
-    await _accounts.disconnect(target);
+    try {
+      await _accounts.disconnect(target);
+    } catch (_) {
+      _notify('Could not disconnect this channel. Please try again.');
+      return;
+    }
     if (mounted) {
       setState(() => _connected[target] = false);
     }
@@ -80,9 +100,7 @@ class _AccountsDialogState extends State<AccountsDialog> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    setState(() => _error = message);
   }
 
   @override
@@ -92,12 +110,19 @@ class _AccountsDialogState extends State<AccountsDialog> {
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          if (_error != null) Semantics(liveRegion: true, child: Text(_error!)),
           for (final target in _targets)
             ListTile(
               contentPadding: EdgeInsets.zero,
               title: Text(target.label),
               subtitle: Text(
-                (_connected[target] ?? false) ? 'Connected' : 'Not connected',
+                (_connected[target] ?? false)
+                    ? 'Connected'
+                    : !_configured.contains(target)
+                    ? 'Connection unavailable in this build'
+                    : target == PublishTarget.instagramReel
+                    ? 'Professional account required'
+                    : 'Not connected',
               ),
               trailing: _busy.contains(target)
                   ? const SizedBox.square(
@@ -110,7 +135,9 @@ class _AccountsDialogState extends State<AccountsDialog> {
                       child: const Text('Disconnect'),
                     )
                   : OutlinedButton(
-                      onPressed: () => _connect(target),
+                      onPressed: _configured.contains(target)
+                          ? () => _connect(target)
+                          : null,
                       child: const Text('Connect'),
                     ),
             ),

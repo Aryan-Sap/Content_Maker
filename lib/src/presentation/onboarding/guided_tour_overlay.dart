@@ -178,7 +178,7 @@ class _Blocker extends StatelessWidget {
     if (rect.width <= 0 || rect.height <= 0) return const SizedBox.shrink();
     return Positioned.fromRect(
       rect: rect,
-      child: ColoredBox(color: Brand.ink.withValues(alpha: 0.68)),
+      child: ColoredBox(color: Brand.scrim),
     );
   }
 }

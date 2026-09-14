@@ -6,13 +6,15 @@ const _defaultPath = 'oauth.local.json';
 const _requiredKeys = {
   'YouTube': ['YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET'],
   'TikTok': ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'],
+  'Instagram': ['INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET'],
 };
 
 Future<void> main(List<String> arguments) async {
   final options = _parseOptions(arguments);
   if (options == null) {
     stderr.writeln(
-      'Usage: dart run tool/check_oauth_config.dart [youtube|tiktok|all] [path]',
+      'Usage: dart run tool/check_oauth_config.dart '
+      '[youtube|tiktok|instagram|all] [path]',
     );
     exitCode = 64;
     return;
@@ -103,6 +105,9 @@ _CheckOptions? _parseOptions(List<String> arguments) {
       case 'tiktok':
       case 'tt':
         platforms = const ['TikTok'];
+      case 'instagram':
+      case 'ig':
+        platforms = const ['Instagram'];
       case 'all':
         platforms = _requiredKeys.keys.toList(growable: false);
       default:

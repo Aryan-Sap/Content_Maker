@@ -31,6 +31,8 @@ import '../../../domain/publishing/video_publisher.dart';
 class InstagramPublisher implements VideoPublisher {
   const InstagramPublisher();
 
+  static const _shareChannel = MethodChannel('content_maker/share');
+
   @override
   PublishTarget get target => PublishTarget.instagramReel;
 
@@ -60,13 +62,15 @@ class InstagramPublisher implements VideoPublisher {
       fraction: 0.7,
       message: 'Showing the rendered file…',
     );
-    await _revealInFileManager(job.videoPath);
+    final openedShareSheet = await _handoffVideo(job.videoPath, caption);
 
     yield PublishProgress(
       target: target,
       status: PublishJobStatus.completed,
       fraction: 1,
-      message: captionCopied
+      message: Platform.isAndroid && openedShareSheet
+          ? 'Choose Instagram in the share sheet to finish publishing your Reel.'
+          : captionCopied
           ? 'Ready for Instagram: the file is selected in Explorer and the '
                 'caption is on your clipboard — post it from the Instagram '
                 'app whenever you like.'
@@ -75,16 +79,24 @@ class InstagramPublisher implements VideoPublisher {
     );
   }
 
-  Future<void> _revealInFileManager(String path) async {
+  Future<bool> _handoffVideo(String path, String caption) async {
     try {
+      if (Platform.isAndroid) {
+        return await _shareChannel.invokeMethod<bool>('shareVideo', {
+              'path': path,
+              'caption': caption,
+            }) ??
+            false;
+      }
       if (Platform.isWindows) {
         // Opens Explorer with the rendered file pre-selected.
         await Process.run('explorer.exe', ['/select,$path']);
-        return;
+        return true;
       }
-      await launchUrl(Uri.file(File(path).parent.path));
+      return await launchUrl(Uri.file(File(path).parent.path));
     } catch (_) {
       // Best-effort: the completion message tells the user where the file is.
+      return false;
     }
   }
 }

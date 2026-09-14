@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/brand.dart';
 import '../../application/manage_accounts.dart';
 import '../../application/publish_export.dart';
 import '../../domain/publishing/auth/oauth_authenticator.dart';
@@ -50,6 +52,7 @@ class _PublishPanelState extends State<PublishPanel> {
   PublishPrivacy _privacy = PublishPrivacy.private;
   bool _madeForKids = false;
   bool _publishing = false;
+  String? _message;
   StreamSubscription<PublishProgress>? _subscription;
 
   @override
@@ -88,7 +91,15 @@ class _PublishPanelState extends State<PublishPanel> {
 
   Future<void> _refreshConnections() async {
     for (final target in PublishTarget.values) {
-      final connected = await _accounts.isConnected(target);
+      bool connected;
+      try {
+        connected = await _accounts.isConnected(target);
+      } catch (_) {
+        _showMessage(
+          'Account status could not be read. Try connecting the channel again.',
+        );
+        continue;
+      }
       if (!mounted) {
         return;
       }
@@ -101,6 +112,11 @@ class _PublishPanelState extends State<PublishPanel> {
 
   bool get _canPublish =>
       !_publishing &&
+      _busyConnecting.isEmpty &&
+      _selected
+          .where((t) => t.supportsAutomatedPublish)
+          .every(_registry.configuredTargets.contains) &&
+      _selected.any((target) => _progress[target]?.isSuccess != true) &&
       _selected.isNotEmpty &&
       _titleController.text.trim().isNotEmpty;
 
@@ -123,6 +139,12 @@ class _PublishPanelState extends State<PublishPanel> {
   }
 
   Future<void> _connect(PublishTarget target) async {
+    if (!_registry.configuredTargets.contains(target)) {
+      _showMessage(
+        '${target.label} connection is unavailable in this build. Choose another destination or use the exported file.',
+      );
+      return;
+    }
     setState(() => _busyConnecting.add(target));
     try {
       await _accounts.connect(target);
@@ -132,8 +154,10 @@ class _PublishPanelState extends State<PublishPanel> {
       setState(() => _connected[target] = true);
     } on OAuthException catch (error) {
       _showMessage(error.message);
-    } catch (error) {
-      _showMessage('$error');
+    } catch (_) {
+      _showMessage(
+        'Could not connect this channel. Check your connection and try Connect again.',
+      );
     } finally {
       if (mounted) {
         setState(() => _busyConnecting.remove(target));
@@ -142,7 +166,12 @@ class _PublishPanelState extends State<PublishPanel> {
   }
 
   Future<void> _disconnect(PublishTarget target) async {
-    await _accounts.disconnect(target);
+    try {
+      await _accounts.disconnect(target);
+    } catch (_) {
+      _showMessage('Could not disconnect this channel. Please try again.');
+      return;
+    }
     if (!mounted) {
       return;
     }
@@ -150,6 +179,7 @@ class _PublishPanelState extends State<PublishPanel> {
   }
 
   Future<void> _publish() async {
+    if (!_canPublish) return;
     final metadata = _buildMetadata();
     final validationError = metadata.validate();
     if (validationError != null) {
@@ -157,7 +187,37 @@ class _PublishPanelState extends State<PublishPanel> {
       return;
     }
 
-    final jobs = _selected
+    // Preserve successful destinations on retry: never post them twice.
+    final pending = _selected
+        .where((target) => _progress[target]?.isSuccess != true)
+        .toSet();
+    setState(() {
+      _publishing = true;
+      _message = null;
+    });
+    try {
+      if (!await File(widget.videoPath).exists()) {
+        if (mounted) {
+          setState(() {
+            _publishing = false;
+            _message =
+                'The exported video is missing. Render it again before publishing.';
+          });
+        }
+        return;
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _publishing = false;
+          _message =
+              'The exported video could not be read. Check file permissions and retry.';
+        });
+      }
+      return;
+    }
+    if (!mounted) return;
+    final jobs = pending
         .map(
           (target) => PublishJob(
             videoPath: widget.videoPath,
@@ -168,26 +228,26 @@ class _PublishPanelState extends State<PublishPanel> {
         .toList();
 
     await _subscription?.cancel();
+    if (!mounted) return;
     setState(() {
       _publishing = true;
-      _progress
-        ..clear()
-        ..addEntries(
-          _selected.map(
-            (target) => MapEntry(
-              target,
-              PublishProgress(
-                target: target,
-                status: PublishJobStatus.queued,
-                message: 'Queued',
-              ),
+      _progress.addEntries(
+        pending.map(
+          (target) => MapEntry(
+            target,
+            PublishProgress(
+              target: target,
+              status: PublishJobStatus.queued,
+              message: 'Queued',
             ),
           ),
-        );
+        ),
+      );
     });
 
     _subscription = _publishExport(jobs).listen(
       (progress) {
+        if (!mounted) return;
         final previous = _progress[progress.target];
         setState(() => _progress[progress.target] = progress);
         if (progress.isTerminal && !(previous?.isTerminal ?? false)) {
@@ -195,7 +255,10 @@ class _PublishPanelState extends State<PublishPanel> {
         }
       },
       onError: (Object error) {
-        _showMessage('$error');
+        if (!mounted) return;
+        _showMessage(
+          'Publishing was interrupted. Check your connection and retry failed destinations.',
+        );
         setState(() => _publishing = false);
       },
       onDone: () {
@@ -211,23 +274,22 @@ class _PublishPanelState extends State<PublishPanel> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
+    setState(() => _message = message);
   }
 
   void _notifyPublishResult(PublishProgress progress) {
     final completed = progress.status == PublishJobStatus.completed;
+    final handoff = !progress.target.supportsAutomatedPublish;
     final url = progress.remoteUrl;
     unawaited(
       DesktopNotifier.show(
         title: completed
-            ? 'Upload complete — ${progress.target.label}'
+            ? '${handoff ? 'Handoff ready' : 'Upload complete'} — ${progress.target.label}'
             : 'Upload failed — ${progress.target.label}',
         body: completed
             ? (url == null
-                  ? 'Your video was published.'
-                  : 'Your video is live: $url')
+                  ? 'Your video is ready. Check the destination status.'
+                  : 'Upload complete. Visibility follows your selected setting: $url')
             : progress.message,
       ),
     );
@@ -238,7 +300,7 @@ class _PublishPanelState extends State<PublishPanel> {
       SnackBar(
         content: Text(
           completed
-              ? '${progress.target.label}: upload complete.'
+              ? '${progress.target.label}: ${handoff ? 'ready for manual posting' : 'upload complete'}.'
               : '${progress.target.label}: ${progress.message}',
         ),
         action: completed && url != null
@@ -252,11 +314,11 @@ class _PublishPanelState extends State<PublishPanel> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFF1C1812),
+    return Material(
+      color: Brand.surface,
+      shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFF39352B)),
+        side: const BorderSide(color: Brand.line),
       ),
       child: Padding(
         padding: const EdgeInsets.all(20),
@@ -277,17 +339,33 @@ class _PublishPanelState extends State<PublishPanel> {
             ),
             const SizedBox(height: 6),
             Text(
-              'Post the rendered short straight to your channels.',
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: const Color(0xFFB9B4A8),
-              ),
+              'Choose channels, review visibility, then send your finished video.',
+              style: theme.textTheme.bodyMedium?.copyWith(color: Brand.muted),
             ),
             const SizedBox(height: 18),
+            if (_message != null) ...[
+              Semantics(
+                liveRegion: true,
+                child: _InfoBanner(icon: Icons.info_outline, text: _message!),
+              ),
+              const SizedBox(height: 12),
+            ],
             Text('Destinations', style: theme.textTheme.titleMedium),
+            for (final target in _selected.where(
+              (t) =>
+                  t.supportsAutomatedPublish &&
+                  !_registry.configuredTargets.contains(t),
+            ))
+              _InfoBanner(
+                icon: Icons.info_outline,
+                text:
+                    '${target.label} publishing is not configured in this build. Deselect it to publish to other channels.',
+              ),
             const SizedBox(height: 10),
             _DestinationList(
               selected: _selected,
               connected: _connected,
+              connectableTargets: _registry.authenticators.keys.toSet(),
               busyConnecting: _busyConnecting,
               enabled: !_publishing,
               onToggle: (target, value) {
@@ -354,9 +432,8 @@ class _PublishPanelState extends State<PublishPanel> {
                     ],
                     onChanged: _publishing
                         ? null
-                        : (value) => setState(
-                            () => _privacy = value ?? _privacy,
-                          ),
+                        : (value) =>
+                              setState(() => _privacy = value ?? _privacy),
                   ),
                 ),
               ],
@@ -377,11 +454,8 @@ class _PublishPanelState extends State<PublishPanel> {
               const _InfoBanner(
                 icon: Icons.info_outline,
                 text:
-                    'Instagram Reels can\'t be auto-posted from a personal '
-                    'account. The file will be selected in Explorer and the '
-                    'caption copied to your clipboard — post it yourself '
-                    'whenever you like. YouTube and TikTok still upload '
-                    'automatically.',
+                    'Instagram uses manual handoff in this app, including connected professional accounts. '
+                    'The video opens in Explorer and the caption is copied. Complete the post in Instagram.',
               ),
             if (_selected.contains(PublishTarget.tiktok))
               const _InfoBanner(
@@ -402,7 +476,15 @@ class _PublishPanelState extends State<PublishPanel> {
                 _publishing
                     ? 'Publishing'
                     : _hasAutomatedSelection
-                    ? 'Publish now'
+                    ? (_progress.values.any(
+                            (p) => p.status == PublishJobStatus.failed,
+                          )
+                          ? 'Retry failed destinations'
+                          : _selected.every(
+                              (t) => _progress[t]?.isSuccess == true,
+                            )
+                          ? 'Upload complete'
+                          : 'Publish now')
                     : 'Prepare',
               ),
             ),
@@ -410,7 +492,10 @@ class _PublishPanelState extends State<PublishPanel> {
               const SizedBox(height: 16),
               for (final target in PublishTarget.values)
                 if (_progress[target] case final progress?)
-                  _ProgressRow(progress: progress),
+                  Semantics(
+                    liveRegion: true,
+                    child: _ProgressRow(progress: progress),
+                  ),
             ],
           ],
         ),
@@ -423,6 +508,7 @@ class _DestinationList extends StatelessWidget {
   const _DestinationList({
     required this.selected,
     required this.connected,
+    required this.connectableTargets,
     required this.busyConnecting,
     required this.enabled,
     required this.onToggle,
@@ -432,6 +518,7 @@ class _DestinationList extends StatelessWidget {
 
   final Set<PublishTarget> selected;
   final Map<PublishTarget, bool> connected;
+  final Set<PublishTarget> connectableTargets;
   final Set<PublishTarget> busyConnecting;
   final bool enabled;
   final void Function(PublishTarget, bool) onToggle;
@@ -455,7 +542,7 @@ class _DestinationList extends StatelessWidget {
             target: target,
             icon: _iconFor(target),
             selected: selected.contains(target),
-            requiresConnection: target.supportsAutomatedPublish,
+            requiresConnection: connectableTargets.contains(target),
             connected: connected[target] ?? false,
             busy: busyConnecting.contains(target),
             enabled: enabled,
@@ -502,8 +589,8 @@ class _DestinationTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF191510),
-          border: Border.all(color: const Color(0xFF39352B)),
+          color: Brand.surfaceSunken,
+          border: Border.all(color: Brand.line),
         ),
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -513,7 +600,7 @@ class _DestinationTile extends StatelessWidget {
                 value: selected,
                 onChanged: enabled ? (value) => onToggle(value ?? false) : null,
               ),
-              Icon(icon, size: 20, color: const Color(0xFFCEC9BD)),
+              Icon(icon, size: 20, color: Brand.muted),
               const SizedBox(width: 10),
               Expanded(
                 child: Column(
@@ -524,16 +611,14 @@ class _DestinationTile extends StatelessWidget {
                       Text(
                         connected ? 'Connected' : 'Not connected',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: connected
-                              ? const Color(0xFF8FD19E)
-                              : const Color(0xFF8A857A),
+                          color: connected ? Brand.success : Brand.faint,
                         ),
                       )
                     else if (!requiresConnection && selected)
                       Text(
                         'Manual hand-off',
                         style: theme.textTheme.bodySmall?.copyWith(
-                          color: const Color(0xFF8A857A),
+                          color: Brand.faint,
                         ),
                       ),
                   ],
@@ -577,9 +662,9 @@ class _ProgressRow extends StatelessWidget {
 
   Color _statusColor() {
     return switch (progress.status) {
-      PublishJobStatus.completed => const Color(0xFF8FD19E),
-      PublishJobStatus.failed => const Color(0xFFE59A9A),
-      _ => const Color(0xFFCEC9BD),
+      PublishJobStatus.completed => Brand.success,
+      PublishJobStatus.failed => Brand.danger,
+      _ => Brand.muted,
     };
   }
 
@@ -615,9 +700,7 @@ class _ProgressRow extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             progress.message,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: const Color(0xFFC4BFB3),
-            ),
+            style: theme.textTheme.bodySmall?.copyWith(color: Brand.muted),
           ),
           if (url != null)
             Padding(
@@ -635,7 +718,7 @@ class _ProgressRow extends StatelessWidget {
                         const Icon(
                           Icons.open_in_new_outlined,
                           size: 14,
-                          color: Color(0xFF7D8DFA),
+                          color: Brand.blueSoft,
                         ),
                         const SizedBox(width: 6),
                         Flexible(
@@ -643,9 +726,9 @@ class _ProgressRow extends StatelessWidget {
                             url,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.bodySmall?.copyWith(
-                              color: const Color(0xFF7D8DFA),
+                              color: Brand.blueSoft,
                               decoration: TextDecoration.underline,
-                              decorationColor: const Color(0xFF7D8DFA),
+                              decorationColor: Brand.blueSoft,
                             ),
                           ),
                         ),
@@ -673,8 +756,8 @@ class _InfoBanner extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFF241F16),
-          border: Border.all(color: const Color(0xFF443F33)),
+          color: Brand.surfaceRaised,
+          border: Border.all(color: Brand.lineStrong),
         ),
         child: Padding(
           padding: const EdgeInsets.all(12),

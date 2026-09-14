@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path_provider/path_provider.dart';
+
 import '../domain/rendering/auto_edit_preset.dart';
 
 class AutoEditPresetStore {
@@ -9,7 +11,7 @@ class AutoEditPresetStore {
   final String? storePath;
 
   Future<List<AutoEditPreset>> load() async {
-    final file = _storeFile();
+    final file = await _storeFile();
     if (!file.existsSync()) {
       return const [];
     }
@@ -25,7 +27,7 @@ class AutoEditPresetStore {
   }
 
   Future<void> saveAll(List<AutoEditPreset> presets) async {
-    final file = _storeFile();
+    final file = await _storeFile();
     final parent = file.parent;
     if (!parent.existsSync()) {
       await parent.create(recursive: true);
@@ -39,15 +41,16 @@ class AutoEditPresetStore {
     );
   }
 
-  File _storeFile() {
+  Future<File> _storeFile() async {
     final explicitPath = storePath;
     if (explicitPath != null) {
       return File(explicitPath);
     }
-    final basePath =
-        Platform.environment['APPDATA'] ??
-        Platform.environment['HOME'] ??
-        Directory.current.path;
+    final basePath = Platform.isAndroid || Platform.isIOS
+        ? (await getApplicationSupportDirectory()).path
+        : Platform.environment['APPDATA'] ??
+              Platform.environment['HOME'] ??
+              Directory.current.path;
     return File(
       '$basePath${Platform.pathSeparator}Content Maker'
       '${Platform.pathSeparator}auto_edit_presets.json',

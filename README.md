@@ -41,8 +41,10 @@ One-time setup:
 1. Create a Google Cloud OAuth **Desktop app** client with the *YouTube Data API
    v3* enabled.
 2. Create a **TikTok for Developers** app with the *Content Posting API* enabled.
-3. Copy `oauth.local.example.json` to `oauth.local.json` (git-ignored) and fill in
-   the client id/secret and TikTok client key/secret.
+3. Create a Meta app with **Instagram API with Instagram Login** if you want
+   users to connect Instagram professional accounts.
+4. Copy `oauth.local.example.json` to `oauth.local.json` (git-ignored) and fill
+   in the credentials for the platforms you want to connect.
 
 Credential checklist:
 
@@ -66,6 +68,17 @@ Credential checklist:
      for the `video.publish` scope.
   4. Paste the app's Client key and Client secret into `TIKTOK_CLIENT_KEY` and
      `TIKTOK_CLIENT_SECRET`.
+- Instagram:
+  1. In the Meta developer dashboard, create a Business app and add
+     **Instagram API with Instagram Login**.
+  2. Add `http://127.0.0.1:8752/` as an exact valid OAuth redirect URI.
+  3. Request `instagram_business_basic` and
+     `instagram_business_content_publish`, then add beta accounts as Instagram
+     testers while the Meta app is in development mode.
+  4. Paste the Instagram App ID and App Secret into `INSTAGRAM_APP_ID` and
+     `INSTAGRAM_APP_SECRET`.
+  5. Instagram Login supports professional Business/Creator accounts, not
+     personal consumer accounts.
 
 Run with the credentials injected:
 
@@ -110,8 +123,10 @@ Notes:
   Content Maker (unsafe)**, leave both YouTube permission boxes checked, and
   **Allow**. You have 15 minutes to finish before the connect times out.
 - TikTok posts stay private until your developer app passes TikTok's audit.
-- Instagram Reels have no compliant API for personal accounts, so that option
-  opens the rendered file for a manual upload instead of auto-posting.
+- Users can connect Instagram Business/Creator accounts. Reels still use a
+  manual hand-off because Meta's publishing endpoint requires a publicly hosted
+  video URL and cannot upload the local rendered file directly. Personal
+  Instagram accounts also remain manual-only.
 - Building on Windows needs Developer Mode enabled (`start ms-settings:developers`).
 
 ## Building the Windows installer (MSIX)

@@ -34,10 +34,11 @@ class AuthorizationCodeFlow {
     })
     buildAuthorizationUrl,
     Duration timeout = const Duration(minutes: 15),
+    int loopbackPort = 0,
   }) async {
     final pkce = PkcePair.generate();
     final state = generateOAuthState();
-    final server = await LoopbackRedirectServer.start();
+    final server = await LoopbackRedirectServer.start(port: loopbackPort);
     final redirectUri = server.redirectUri;
 
     try {

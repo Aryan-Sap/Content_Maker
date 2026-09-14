@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:path_provider/path_provider.dart';
 
 /// Which editing pipeline a project was created with.
 enum ProjectPipeline { simple, custom }
@@ -38,6 +39,7 @@ class ProjectSummary {
     required this.ownerId,
     required this.createdAt,
     required this.lastOpenedAt,
+    this.projectFilePath,
   });
 
   final String id;
@@ -46,8 +48,9 @@ class ProjectSummary {
   final String ownerId;
   final DateTime createdAt;
   final DateTime lastOpenedAt;
+  final String? projectFilePath;
 
-  ProjectSummary copyWith({DateTime? lastOpenedAt}) {
+  ProjectSummary copyWith({DateTime? lastOpenedAt, String? projectFilePath}) {
     return ProjectSummary(
       id: id,
       name: name,
@@ -55,6 +58,7 @@ class ProjectSummary {
       ownerId: ownerId,
       createdAt: createdAt,
       lastOpenedAt: lastOpenedAt ?? this.lastOpenedAt,
+      projectFilePath: projectFilePath ?? this.projectFilePath,
     );
   }
 
@@ -65,6 +69,7 @@ class ProjectSummary {
     'ownerId': ownerId,
     'createdAt': createdAt.toIso8601String(),
     'lastOpenedAt': lastOpenedAt.toIso8601String(),
+    'projectFilePath': projectFilePath,
   };
 
   factory ProjectSummary.fromJson(Object? json) {
@@ -80,6 +85,9 @@ class ProjectSummary {
       createdAt: DateTime.tryParse('${map['createdAt']}') ?? DateTime.now(),
       lastOpenedAt:
           DateTime.tryParse('${map['lastOpenedAt']}') ?? DateTime.now(),
+      projectFilePath: map['projectFilePath'] is String
+          ? map['projectFilePath'] as String
+          : null,
     );
   }
 }
@@ -99,7 +107,7 @@ class AppSessionStore {
 
   /// Marks the walkthrough complete without disturbing profiles or projects.
   Future<void> markTutorialCompleted() async {
-    final file = _storeFile();
+    final file = await _storeFile();
     final decoded = await _readDocument();
     decoded['schemaVersion'] = 2;
     decoded['tutorialCompleted'] = true;
@@ -129,7 +137,7 @@ class AppSessionStore {
     required List<UserProfile> profiles,
     required List<ProjectSummary> projects,
   }) async {
-    final file = _storeFile();
+    final file = await _storeFile();
     final decoded = await _readDocument();
     await _writeDocument(file, {
       'schemaVersion': 2,
@@ -140,7 +148,7 @@ class AppSessionStore {
   }
 
   Future<Map<String, Object?>> _readDocument() async {
-    final file = _storeFile();
+    final file = await _storeFile();
     if (!file.existsSync()) {
       return <String, Object?>{};
     }
@@ -164,15 +172,16 @@ class AppSessionStore {
     await file.writeAsString('${encoder.convert(document)}\n');
   }
 
-  File _storeFile() {
+  Future<File> _storeFile() async {
     final explicitPath = storePath;
     if (explicitPath != null) {
       return File(explicitPath);
     }
-    final basePath =
-        Platform.environment['APPDATA'] ??
-        Platform.environment['HOME'] ??
-        Directory.current.path;
+    final basePath = Platform.isAndroid || Platform.isIOS
+        ? (await getApplicationSupportDirectory()).path
+        : Platform.environment['APPDATA'] ??
+              Platform.environment['HOME'] ??
+              Directory.current.path;
     return File(
       '$basePath${Platform.pathSeparator}Content Maker'
       '${Platform.pathSeparator}session.json',

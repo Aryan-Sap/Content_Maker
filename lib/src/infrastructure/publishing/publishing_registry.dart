@@ -3,6 +3,7 @@ import '../../domain/publishing/auth/oauth_token_store.dart';
 import '../../domain/publishing/publish_target.dart';
 import '../../domain/publishing/video_publisher.dart';
 import 'instagram/instagram_publisher.dart';
+import 'instagram/instagram_oauth_authenticator.dart';
 import 'oauth/oauth_config.dart';
 import 'oauth/secure_oauth_token_store.dart';
 import 'tiktok/tiktok_oauth_authenticator.dart';
@@ -19,14 +20,22 @@ class PublishingRegistry {
     OAuthTokenStore? tokenStore,
     Map<PublishTarget, VideoPublisher>? publishers,
     Map<PublishTarget, OAuthAuthenticator>? authenticators,
-  }) : tokenStore = tokenStore ?? const SecureOAuthTokenStore(),
+  }) : configuredTargets =
+           authenticators?.keys.toSet() ??
+           {
+             for (final target in PublishTarget.values)
+               if (OAuthConfig.resolveForTarget(target)?.isConfigured == true)
+                 target,
+           },
+       tokenStore = tokenStore ?? const SecureOAuthTokenStore(),
        publishers = publishers ?? _defaultPublishers(),
        authenticators = authenticators ?? _defaultAuthenticators();
 
   final OAuthTokenStore tokenStore;
+  final Set<PublishTarget> configuredTargets;
   final Map<PublishTarget, VideoPublisher> publishers;
 
-  /// Targets without an authenticator (Instagram) publish without OAuth.
+  /// Account connections available to the publishing UI.
   final Map<PublishTarget, OAuthAuthenticator> authenticators;
 
   static Map<PublishTarget, VideoPublisher> _defaultPublishers() {
@@ -44,6 +53,9 @@ class PublishingRegistry {
       ),
       PublishTarget.tiktok: TiktokOAuthAuthenticator(
         config: OAuthConfig.resolveForTarget(PublishTarget.tiktok)!,
+      ),
+      PublishTarget.instagramReel: InstagramOAuthAuthenticator(
+        config: OAuthConfig.resolveForTarget(PublishTarget.instagramReel)!,
       ),
     };
   }

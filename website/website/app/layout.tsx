@@ -1,6 +1,13 @@
 import type { Metadata } from "next";
+import { Geist } from "next/font/google";
 import { headers } from "next/headers";
 import "./globals.css";
+
+const geist = Geist({
+  subsets: ["latin"],
+  variable: "--font-geist",
+  display: "swap",
+});
 
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
@@ -13,13 +20,13 @@ export async function generateMetadata(): Promise<Metadata> {
     icons: {
       icon: [
         {
-          url: "/content-maker-icon.png",
+          url: "/content-maker-icon-white-m.png",
           type: "image/png",
           sizes: "512x512",
         },
       ],
-      shortcut: "/content-maker-icon.png",
-      apple: "/content-maker-icon.png",
+      shortcut: "/content-maker-icon-white-m.png",
+      apple: "/content-maker-icon-white-m.png",
     },
     title: "Content Maker — Make Content Easy",
     description:
@@ -52,7 +59,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
+    <html lang="en" className={geist.variable}>
       <body>{children}</body>
     </html>
   );

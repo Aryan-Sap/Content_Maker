@@ -1,5 +1,5 @@
 #define MyAppName "Content Maker"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "Content Maker"
 #define MyAppURL "https://contentmaker.site"
 #define MyAppExeName "content_maker.exe"
@@ -27,7 +27,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 CloseApplications=yes
 RestartApplications=no
-VersionInfoVersion=1.0.0.0
+VersionInfoVersion=1.1.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=Content Maker Installer
 VersionInfoProductName={#MyAppName}

@@ -9,6 +9,7 @@ class ManualEditProject {
     required this.backgroundHexColor,
     required this.blurredBackgroundEnabled,
     required this.clips,
+    this.timelineDurationSeconds,
   });
 
   final String outputPath;
@@ -18,6 +19,7 @@ class ManualEditProject {
   final String backgroundHexColor;
   final bool blurredBackgroundEnabled;
   final List<TimelineClip> clips;
+  final double? timelineDurationSeconds;
 
   factory ManualEditProject.fromJson(Object? json) {
     final map = _asMap(json);
@@ -33,6 +35,10 @@ class ManualEditProject {
         'blurredBackgroundEnabled',
         true,
       ),
+      timelineDurationSeconds: _readNullableDouble(
+        map,
+        'timelineDurationSeconds',
+      ),
       clips: clipsJson is List
           ? List.unmodifiable(clipsJson.map(TimelineClip.fromJson))
           : const [],
@@ -40,7 +46,7 @@ class ManualEditProject {
   }
 
   double get durationSeconds {
-    var end = 0.0;
+    var end = timelineDurationSeconds ?? 0.0;
     for (final clip in clips) {
       if (!clip.enabled) {
         continue;
@@ -93,6 +99,7 @@ class ManualEditProject {
     String? backgroundHexColor,
     bool? blurredBackgroundEnabled,
     List<TimelineClip>? clips,
+    double? timelineDurationSeconds,
   }) {
     return ManualEditProject(
       outputPath: outputPath ?? this.outputPath,
@@ -103,6 +110,8 @@ class ManualEditProject {
       blurredBackgroundEnabled:
           blurredBackgroundEnabled ?? this.blurredBackgroundEnabled,
       clips: clips ?? this.clips,
+      timelineDurationSeconds:
+          timelineDurationSeconds ?? this.timelineDurationSeconds,
     );
   }
 
@@ -115,6 +124,7 @@ class ManualEditProject {
       'frameRate': frameRate,
       'backgroundHexColor': backgroundHexColor,
       'blurredBackgroundEnabled': blurredBackgroundEnabled,
+      'timelineDurationSeconds': timelineDurationSeconds,
       'clips': [for (final clip in clips) clip.toJson()],
     };
   }
@@ -159,4 +169,15 @@ bool _readBool(Map<String, Object?> map, String key, bool fallback) {
     return value.toLowerCase() == 'true';
   }
   return fallback;
+}
+
+double? _readNullableDouble(Map<String, Object?> map, String key) {
+  final value = map[key];
+  if (value is num) {
+    return value.toDouble();
+  }
+  if (value is String) {
+    return double.tryParse(value);
+  }
+  return null;
 }

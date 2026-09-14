@@ -1,33 +1,7 @@
 import 'package:flutter/material.dart';
-
-/// Content Maker brand tokens, mirroring the marketing site:
-/// warm ink backgrounds, electric lime primary, vivid blue secondary,
-/// cream text, Bricolage Grotesque display type over Archivo body type.
-abstract final class Brand {
-  // Core palette (from the landing page).
-  static const ink = Color(0xFF16130D);
-  static const inkDeep = Color(0xFF120F0A);
-  static const lime = Color(0xFFC9F63C);
-  static const blue = Color(0xFF3D53F5);
-  static const blueSoft = Color(0xFF7D8DFA);
-  static const cream = Color(0xFFFAF7F1);
-
-  // Derived surfaces / lines / muted text.
-  static const surface = Color(0xFF1C1812);
-  static const surfaceRaised = Color(0xFF221D15);
-  static const surfaceSunken = Color(0xFF191510);
-  static const line = Color(0xFF39352B);
-  static const lineStrong = Color(0xFF4A4537);
-  static const muted = Color(0xFFB9B4A8);
-  static const faint = Color(0xFF8A857A);
-
-  static const displayFont = 'Bricolage Grotesque';
-  static const bodyFont = 'Archivo';
-
-  /// Standard corner radius for cards/panels.
-  static const radius = 12.0;
-  static const radiusSmall = 8.0;
-}
+import '../../theme/studio_theme.dart';
+import '../../theme/brand_tokens.dart';
+export '../../theme/brand_tokens.dart';
 
 /// The circular Content Maker mark used across the desktop product.
 class BrandLogo extends StatelessWidget {
@@ -143,12 +117,12 @@ class BrandWordmark extends StatelessWidget {
   }
 }
 
-/// A rotated sticker chip like the landing page's playful badges.
+/// A compact product-status badge.
 class BrandSticker extends StatelessWidget {
   const BrandSticker({
     super.key,
     required this.label,
-    this.rotationDegrees = -4,
+    this.rotationDegrees = 0,
     this.color = Brand.lime,
     this.textColor = Brand.ink,
   });
@@ -163,18 +137,19 @@ class BrandSticker extends StatelessWidget {
     return Transform.rotate(
       angle: rotationDegrees * 3.14159265 / 180,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
         decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(6),
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: color.withValues(alpha: 0.38)),
         ),
         child: Text(
           label,
           style: TextStyle(
-            fontFamily: Brand.displayFont,
+            fontFamily: Brand.bodyFont,
             fontWeight: FontWeight.w700,
-            fontSize: 11,
-            letterSpacing: 0.8,
+            fontSize: 10,
+            letterSpacing: 0.9,
             color: textColor,
             height: 1,
           ),
@@ -191,8 +166,8 @@ class BrandEntrance extends StatefulWidget {
     super.key,
     required this.child,
     this.delay = Duration.zero,
-    this.duration = const Duration(milliseconds: 420),
-    this.offset = 24,
+    this.duration = StudioTheme.reveal,
+    this.offset = 8,
   });
 
   final Widget child;
@@ -219,7 +194,7 @@ class _BrandEntranceState extends State<BrandEntrance>
       widget.delay.inMicroseconds /
           (widget.delay + widget.duration).inMicroseconds,
       1,
-      curve: Curves.easeOutCubic,
+      curve: StudioTheme.curve,
     ),
   );
 
@@ -227,6 +202,12 @@ class _BrandEntranceState extends State<BrandEntrance>
   void initState() {
     super.initState();
     _controller.forward();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) _controller.value = 1;
   }
 
   @override
@@ -238,18 +219,22 @@ class _BrandEntranceState extends State<BrandEntrance>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _curve,
-      builder: (context, child) {
-        return Opacity(
-          opacity: _curve.value,
-          child: Transform.translate(
-            offset: Offset(0, widget.offset * (1 - _curve.value)),
-            child: child,
-          ),
-        );
-      },
-      child: widget.child,
+    if (MediaQuery.disableAnimationsOf(context)) return widget.child;
+    return Listener(
+      onPointerDown: (_) => _controller.value = 1,
+      child: AnimatedBuilder(
+        animation: _curve,
+        builder: (context, child) {
+          return Opacity(
+            opacity: _curve.value,
+            child: Transform.translate(
+              offset: Offset(0, widget.offset * (1 - _curve.value)),
+              child: child,
+            ),
+          );
+        },
+        child: widget.child,
+      ),
     );
   }
 }
@@ -266,14 +251,15 @@ class BrandPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
+    if (MediaQuery.disableAnimationsOf(context)) return child;
     final fade = CurvedAnimation(
       parent: animation,
-      curve: const Interval(0.15, 1, curve: Curves.easeOutCubic),
+      curve: const Interval(0.15, 1, curve: StudioTheme.curve),
     );
     final slide = Tween<Offset>(
       begin: const Offset(0, 0.035),
       end: Offset.zero,
-    ).animate(CurvedAnimation(parent: animation, curve: Curves.easeOutCubic));
+    ).animate(CurvedAnimation(parent: animation, curve: StudioTheme.curve));
     final exitFade = Tween<double>(begin: 1, end: 0.92).animate(
       CurvedAnimation(parent: secondaryAnimation, curve: Curves.easeIn),
     );

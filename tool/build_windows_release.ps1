@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-  [ValidateSet('youtube', 'tiktok', 'all')]
+  [ValidateSet('youtube', 'tiktok', 'instagram', 'all')]
   [string]$OAuthTarget = 'youtube',
 
   [string]$ConfigPath = 'oauth.local.json',

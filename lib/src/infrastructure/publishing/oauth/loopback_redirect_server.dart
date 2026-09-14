@@ -26,8 +26,8 @@ class LoopbackRedirectServer {
 
   String get redirectUri => 'http://127.0.0.1:$port/';
 
-  static Future<LoopbackRedirectServer> start() async {
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+  static Future<LoopbackRedirectServer> start({int port = 0}) async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, port);
     return LoopbackRedirectServer._(server);
   }
 

@@ -43,6 +43,11 @@ void main() {
       'TIKTOK_CLIENT_KEY': ' tiktok-key ',
       'TIKTOK_CLIENT_SECRET': ' tiktok-secret ',
     });
+    final instagram =
+        OAuthConfig.fromJsonForTarget(PublishTarget.instagramReel, {
+          'INSTAGRAM_APP_ID': ' instagram-app-id ',
+          'INSTAGRAM_APP_SECRET': ' instagram-app-secret ',
+        });
 
     expect(youtube?.clientId, 'desktop.apps.googleusercontent.com');
     expect(youtube?.clientSecret, 'youtube-secret');
@@ -53,6 +58,9 @@ void main() {
     expect(tiktok?.clientId, 'tiktok-key');
     expect(tiktok?.clientSecret, 'tiktok-secret');
     expect(tiktok?.scopes, ['video.publish']);
+    expect(instagram?.clientId, 'instagram-app-id');
+    expect(instagram?.clientSecret, 'instagram-app-secret');
+    expect(instagram?.scopes, contains('instagram_business_content_publish'));
   });
 
   test(

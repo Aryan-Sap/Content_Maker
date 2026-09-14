@@ -46,7 +46,9 @@ class OAuthClientConfig {
 ///   "YOUTUBE_CLIENT_ID": "...apps.googleusercontent.com",
 ///   "YOUTUBE_CLIENT_SECRET": "...",
 ///   "TIKTOK_CLIENT_KEY": "...",
-///   "TIKTOK_CLIENT_SECRET": "..."
+///   "TIKTOK_CLIENT_SECRET": "...",
+///   "INSTAGRAM_APP_ID": "...",
+///   "INSTAGRAM_APP_SECRET": "..."
 /// }
 /// ```
 class OAuthConfig {
@@ -65,6 +67,12 @@ class OAuthConfig {
   );
   static const String _tiktokClientSecret = String.fromEnvironment(
     'TIKTOK_CLIENT_SECRET',
+  );
+  static const String _instagramAppId = String.fromEnvironment(
+    'INSTAGRAM_APP_ID',
+  );
+  static const String _instagramAppSecret = String.fromEnvironment(
+    'INSTAGRAM_APP_SECRET',
   );
 
   static const OAuthClientConfig youtube = OAuthClientConfig(
@@ -86,11 +94,19 @@ class OAuthConfig {
     scopes: ['video.publish'],
   );
 
+  static const OAuthClientConfig instagram = OAuthClientConfig(
+    clientId: _instagramAppId,
+    clientSecret: _instagramAppSecret,
+    authorizationEndpoint: 'https://www.instagram.com/oauth/authorize',
+    tokenEndpoint: 'https://api.instagram.com/oauth/access_token',
+    scopes: ['instagram_business_basic', 'instagram_business_content_publish'],
+  );
+
   static OAuthClientConfig? forTarget(PublishTarget target) {
     return switch (target) {
       PublishTarget.youtubeShort => youtube,
       PublishTarget.tiktok => tiktok,
-      PublishTarget.instagramReel => null,
+      PublishTarget.instagramReel => instagram,
     };
   }
 
@@ -145,7 +161,13 @@ class OAuthConfig {
         tokenEndpoint: tiktok.tokenEndpoint,
         scopes: tiktok.scopes,
       ),
-      PublishTarget.instagramReel => null,
+      PublishTarget.instagramReel => OAuthClientConfig(
+        clientId: _stringValue(json, 'INSTAGRAM_APP_ID'),
+        clientSecret: _stringValue(json, 'INSTAGRAM_APP_SECRET'),
+        authorizationEndpoint: instagram.authorizationEndpoint,
+        tokenEndpoint: instagram.tokenEndpoint,
+        scopes: instagram.scopes,
+      ),
     };
   }
 

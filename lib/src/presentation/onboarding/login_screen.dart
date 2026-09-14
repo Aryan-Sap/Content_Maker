@@ -209,14 +209,10 @@ class _LoginScreenState extends State<LoginScreen> {
     return Container(
       decoration: BoxDecoration(
         color: Brand.surface,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: Brand.lineStrong),
+        borderRadius: BorderRadius.circular(Brand.radius),
+        border: Border.all(color: Brand.line),
         boxShadow: const [
-          BoxShadow(
-            color: Color(0x33000000),
-            blurRadius: 32,
-            offset: Offset(0, 18),
-          ),
+          BoxShadow(color: Brand.shadow, blurRadius: 24, offset: Offset(0, 12)),
         ],
       ),
       padding: const EdgeInsets.all(28),
@@ -236,26 +232,31 @@ class _LoginScreenState extends State<LoginScreen> {
                 child: const Icon(Icons.person_outline, color: Brand.ink),
               ),
               const SizedBox(width: 13),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'CREATOR ACCESS',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: Brand.lime,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 1.5,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'LOCAL WORKSPACE',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: Brand.lime,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.5,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text('Open your studio.', style: theme.textTheme.titleLarge),
-                ],
+                    const SizedBox(height: 3),
+                    Text(
+                      'Continue to your studio.',
+                      style: theme.textTheme.titleLarge,
+                    ),
+                  ],
+                ),
               ),
             ],
           ),
           const SizedBox(height: 12),
           Text(
-            'Sign in with a local profile to continue.',
+            'Profiles and projects are stored only on this device.',
             style: theme.textTheme.bodyMedium?.copyWith(color: Brand.muted),
           ),
           const SizedBox(height: 22),
@@ -295,7 +296,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: 10),
                       child: Text(
-                        'OR START FRESH',
+                        'CREATE A NEW PROFILE',
                         style: TextStyle(
                           color: Brand.faint,
                           fontSize: 10,
@@ -336,7 +337,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 Icon(Icons.lock_outline, size: 14, color: Brand.faint),
                 SizedBox(width: 6),
                 Text(
-                  'Local profile · no account · no cloud lock-in',
+                  'Local profile · no account required',
                   style: TextStyle(color: Brand.faint, fontSize: 11),
                 ),
               ],
@@ -377,26 +378,18 @@ class _LoginStory extends StatelessWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const BrandLogo(size: 62),
+              const BrandLogo(size: 54),
               const SizedBox(width: 14),
               const BrandWordmark(size: 21, showMark: false),
-              const SizedBox(width: 14),
-              if (!compact)
-                const BrandSticker(
-                  label: 'DESKTOP STUDIO',
-                  rotationDegrees: 2,
-                  color: Brand.blue,
-                  textColor: Brand.cream,
-                ),
             ],
           ),
           SizedBox(height: compact ? 22 : 38),
           Text.rich(
             TextSpan(
               children: [
-                const TextSpan(text: 'TURN RAW\nGAMEPLAY INTO\n'),
+                const TextSpan(text: 'A good story.\n'),
                 TextSpan(
-                  text: 'YOUR NEXT HIT.',
+                  text: 'Your cut.',
                   style: theme.textTheme.displayLarge?.copyWith(
                     color: Brand.lime,
                   ),
@@ -405,15 +398,15 @@ class _LoginStory extends StatelessWidget {
             ),
             textAlign: compact ? TextAlign.center : TextAlign.left,
             style: theme.textTheme.displayLarge?.copyWith(
-              fontSize: compact ? 40 : 58,
-              height: 0.96,
-              letterSpacing: -1.6,
+              fontSize: compact ? 38 : 54,
+              height: 1,
+              letterSpacing: -1.25,
             ),
           ),
           const SizedBox(height: 22),
           Text(
-            'One studio for fast Shorts and considered long-form edits. '
-            'Render locally, keep control, publish when it feels right.',
+            'Import, arrange, render and publish in one considered desktop '
+            'workspace. Your footage remains under your control.',
             textAlign: compact ? TextAlign.center : TextAlign.left,
             style: theme.textTheme.bodyLarge?.copyWith(
               color: Brand.muted,
@@ -466,9 +459,9 @@ class _CreationStep extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
       decoration: BoxDecoration(
-        color: Brand.surface.withValues(alpha: 0.9),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: Brand.lineStrong),
+        color: Brand.surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Brand.line),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -504,50 +497,13 @@ class _LoginBackdrop extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ColoredBox(
-      color: Brand.inkDeep,
-      child: Stack(
-        children: [
-          Positioned(
-            left: -140,
-            top: -200,
-            child: Container(
-              width: 520,
-              height: 520,
-              decoration: const BoxDecoration(
-                color: Color(0x173D53F5),
-                shape: BoxShape.circle,
-              ),
-            ),
-          ),
-          Positioned(
-            right: -180,
-            bottom: -220,
-            child: Container(
-              width: 520,
-              height: 520,
-              decoration: const BoxDecoration(
-                color: Color(0x12C9F63C),
-                shape: BoxShape.circle,
-              ),
-            ),
-          ),
-          Positioned(
-            right: 42,
-            top: 42,
-            child: Transform.rotate(
-              angle: 0.14,
-              child: Container(
-                width: 120,
-                height: 18,
-                decoration: BoxDecoration(
-                  color: Brand.blue,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-              ),
-            ),
-          ),
-        ],
+    return const DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [Brand.inkDeep, Brand.surface, Brand.surfaceSunken],
+        ),
       ),
     );
   }
@@ -597,8 +553,8 @@ class _ProfileTileState extends State<_ProfileTile> {
               children: [
                 CircleAvatar(
                   radius: 20,
-                  backgroundColor: Brand.blue,
-                  foregroundColor: Brand.cream,
+                  backgroundColor: Brand.surfaceHover,
+                  foregroundColor: Brand.lime,
                   child: Text(
                     widget.profile.name.isEmpty
                         ? '?'
