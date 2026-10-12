@@ -2,8 +2,8 @@
 
 **Goal:** Make the YouTube publishing pipeline work end-to-end. The upload code is
 complete; the only blocker is the first-time Google consent, which fails with
-`Timed out waiting for authorization.` because the GUI allowed just 5 minutes and
-the "unverified app" warning flow takes longer.
+`Timed out waiting for authorization.` because the GUI allowed just 5 minutes,
+which is too short for a slow first-time sign-in and consent.
 
 This file has three parts:
 - **Part 1 — Code changes** (for Codex to apply/verify).
@@ -77,12 +77,13 @@ flutter test test/publishing/loopback_redirect_server_test.dart
 
 2. **OAuth consent screen** (APIs & Services → OAuth consent screen):
    - User type: **External**.
-   - **Publishing status: leave on `Testing`.** Do **not** click "Publish app" —
-     the `youtube.upload` scope is *sensitive*, and Production forces Google's full
-     verification/audit (not wanted for personal use).
-   - **Test users → Add users → `aryan.saproo@gmail.com`** (the exact account you sign
-     in with). In Testing mode, only listed test users can pass consent — **this is
-     the step people miss.**
+   - **Publishing status:** the production app is **In production and verified by
+     Google** for the sensitive `youtube.upload` scope, so any account can consent.
+     For a new development project, leave it on `Testing` and add yourself under
+     **Test users** until you submit it for verification.
+   - **Test users** (development clients only): add the exact account you sign in
+     with. In Testing mode only listed test users can pass consent — **this is the
+     step people miss.**
    - **Scopes:** ensure both are present:
      `https://www.googleapis.com/auth/youtube.upload` and
      `https://www.googleapis.com/auth/youtube.readonly`.
@@ -109,9 +110,10 @@ flutter test test/publishing/loopback_redirect_server_test.dart
 ### The consent click-through (human, when pressing "Connect")
 The browser opens automatically. Move through it without long pauses (you now have
 15 minutes):
-1. Pick the **`aryan.saproo@gmail.com`** test-user account; sign in if asked.
-2. **"Google hasn't verified this app"** → **Advanced** → **Go to Content Maker
-   (unsafe)**. (Expected — it's your own unverified app.)
+1. Pick the Google account that owns the YouTube channel; sign in if asked.
+2. With the verified production client there is no warning. Only a development
+   client in Testing mode shows **"Google hasn't verified this app"** → **Advanced**
+   → **Go to Content Maker (unsafe)**.
 3. Leave **both** YouTube permission boxes checked → **Continue / Allow**.
 4. Tab shows *"Authorization complete. You can close this tab…"* — done.
 
@@ -134,8 +136,8 @@ The browser opens automatically. Move through it without long pauses (you now ha
 - A refresh token is issued only because the app sends `access_type=offline` +
   `prompt=consent`. It is stored in Windows secure storage (`SecureOAuthTokenStore`,
   DPAPI-backed).
-- While the project stays in **Testing**, refresh tokens can expire after ~7 days of
-  disuse. If a later upload suddenly asks for consent again, just press **Connect**
+- Only while a development project stays in **Testing**, refresh tokens can expire
+  after ~7 days of disuse. If a later upload suddenly asks for consent again, just press **Connect**
   once more to re-issue one.
 - If Connect fails immediately with an "access_denied"/blocked error (not a
   timeout), the signing-in account is almost certainly not in the **Test users**

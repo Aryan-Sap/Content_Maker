@@ -7,8 +7,9 @@ Use this when turning the local Content Maker pipeline into a downloadable app.
 This is the path we can build locally today.
 
 1. Keep `oauth.local.json` out of git.
-2. Make sure the Google OAuth consent screen lists every beta tester under
-   **Test users** while the app remains in Testing mode.
+2. The production Google OAuth app is already verified, so beta testers need no
+   allow-listing. Only a separate development client that is still in Testing
+   mode needs testers listed under **Test users**.
 3. Bundle FFmpeg so users do not need a separate install.
 4. Add each Instagram beta account as an app tester in Meta when Instagram
    connection is enabled.
@@ -30,9 +31,10 @@ Store.
 
 Before offering the app to arbitrary users:
 
-1. Move the Google OAuth consent screen from Testing to Production.
-2. Complete Google verification for the sensitive YouTube upload scope:
-   `https://www.googleapis.com/auth/youtube.upload`.
+1. ~~Move the Google OAuth consent screen from Testing to Production.~~ Done.
+2. ~~Complete Google verification for the sensitive YouTube upload scope:
+   `https://www.googleapis.com/auth/youtube.upload`.~~ Done: verified through
+   Google Cloud Console.
 3. Complete TikTok app review for Content Posting API access before enabling
    real TikTok posting for users.
 4. Complete Meta App Review for Instagram professional accounts before making
@@ -42,5 +44,5 @@ Before offering the app to arbitrary users:
 6. Include FFmpeg license notices for the exact FFmpeg build shipped with the
    app.
 
-Until Google verification is complete, only configured Google test users can
-complete OAuth consent reliably.
+Google verification is complete for the production client. Only a development
+client still in Testing mode is limited to configured Google test users.

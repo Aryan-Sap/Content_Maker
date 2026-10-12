@@ -50,12 +50,11 @@ Credential checklist:
 
 - YouTube:
   1. In Google Cloud Console, enable **YouTube Data API v3** for the project.
-  2. On the **OAuth consent screen**, set user type **External** and leave the
-     publishing status on **Testing** (do *not* click "Publish app" — the
-     `youtube.upload` scope is sensitive and Production would force Google's full
-     verification/audit). Under **Test users**, add the exact Google account you
-     sign in with (e.g. `aryan.saproo@gmail.com`); in Testing mode only listed test
-     users can pass consent.
+  2. On the **OAuth consent screen**, set user type **External**. The production
+     app is **verified by Google** for the sensitive `youtube.upload` scope, so
+     any Google account can complete consent. For a fresh development project,
+     keep the publishing status on **Testing** and add each developer account
+     under **Test users** until you submit it for Google verification.
   3. Create an OAuth client of type **Desktop app** (the loopback redirect
      `http://127.0.0.1:<port>/` the app uses is auto-allowed, nothing to register).
   4. Paste its client id and client secret into `YOUTUBE_CLIENT_ID` and
@@ -118,10 +117,11 @@ Notes:
 
 - The first sign-in per platform opens your browser once; refresh tokens keep
   later posts hands-off.
-- On the first YouTube consent, the browser shows "Google hasn't verified this
-  app" (expected for an unverified personal app). Click **Advanced → Go to
-  Content Maker (unsafe)**, leave both YouTube permission boxes checked, and
-  **Allow**. You have 15 minutes to finish before the connect times out.
+- On the first YouTube consent with the verified production client, the browser
+  shows the standard Google consent screen: leave both YouTube permission boxes
+  checked and **Allow**. You have 15 minutes to finish before the connect times
+  out. (A development client still in Testing mode shows "Google hasn't verified
+  this app"; click **Advanced → Go to Content Maker (unsafe)** there.)
 - TikTok posts stay private until your developer app passes TikTok's audit.
 - Users can connect Instagram Business/Creator accounts. Reels still use a
   manual hand-off because Meta's publishing endpoint requires a publicly hosted

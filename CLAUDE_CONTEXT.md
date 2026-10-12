@@ -190,11 +190,12 @@ Prerequisites (external, one-time): a Google Cloud OAuth "Desktop app" client wi
 the YouTube Data API v3 enabled, and a TikTok for Developers app with the Content
 Posting API enabled.
 
-Keep the Google OAuth consent screen in **Testing** and add the signing-in Google
-account as a **test user** — the `youtube.upload` scope is sensitive, so Production
-would trigger Google's verification/audit. On the first consent the browser shows
-the "Google hasn't verified this app" warning; the user clicks **Advanced → Go to
-Content Maker (unsafe)** and allows both scopes. The interactive consent window is
+The production Google OAuth app has been **verified by Google** (via Google Cloud
+Console) for the sensitive `youtube.upload` scope, so any Google account can
+complete consent with no "unverified app" warning. A development client that is
+still in **Testing** mode needs the signing-in account listed as a **test user**
+and shows the "Google hasn't verified this app" warning (click **Advanced → Go to
+Content Maker (unsafe)**). The interactive consent window is
 15 minutes (`AuthorizationCodeFlow.obtainCode` / `LoopbackRedirectServer.waitForCode`
 defaults), widened from 5 min so the warning click-through does not time out.
 
